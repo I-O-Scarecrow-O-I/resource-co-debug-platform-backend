@@ -1,0 +1,40 @@
+from enum import StrEnum
+
+
+class ProjectStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    READY = "READY"
+    INVALID = "INVALID"
+    ARCHIVED = "ARCHIVED"
+
+
+class BackendModuleName(StrEnum):
+    CODE_GENERATION = "code_generation"
+    CO_DEBUG = "co_debug"
+    VULNERABILITY = "vulnerability"
+    RISK_WARNING = "risk_warning"
+
+
+class TaskType(StrEnum):
+    CODE_GENERATION = "CODE_GENERATION"
+    CODE_REPAIR = "CODE_REPAIR"
+    BUILD = "BUILD"
+    DEBUG = "DEBUG"
+    SCHEDULE_EXPERIMENT = "SCHEDULE_EXPERIMENT"
+    DEPENDENCY_ANALYSIS = "DEPENDENCY_ANALYSIS"
+    VULNERABILITY_SCAN = "VULNERABILITY_SCAN"
+    RISK_CHECK = "RISK_CHECK"
+
+
+class TaskStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class SchedulerStrategy(StrEnum):
+    FIFO_BASELINE = "FIFO_BASELINE"
+    RESOURCE_AWARE = "RESOURCE_AWARE"
+

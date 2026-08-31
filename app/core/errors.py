@@ -12,3 +12,4 @@ class NotFoundError(AppError):
 
 class CancellationRequested(Exception):
     """Raised when module A asks a long-running module to stop."""
+

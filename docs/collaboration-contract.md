@@ -10,33 +10,83 @@ The repository sets:
 requires-python = ">=3.11,<3.12"
 ```
 
-## 2. How Module A Calls Module C
+Windows local runtime:
 
-Module A calls module C scheduling algorithms as ordinary Python functions.
+```text
+O:\Code_dependency\python_runtimes\python-3.11.9
+```
 
-Module A remains responsible for:
+Project virtual environment:
 
-- REST API
+```text
+O:\Code_dependency\python_envs\resource-co-debug-py311
+```
+
+## 2. Backend Module Integration Standard
+
+This repository is the main backend framework. Other contract backend modules should integrate as
+Python packages under `app/modules`.
+
+Required module shape:
+
+```text
+app/modules/<module_name>/
+  provider.py
+  routes.py
+  schemas.py
+  service.py
+```
+
+Each module exposes a provider returning:
+
+```python
+BackendModule(
+    name="<module_name>",
+    route_prefix="/modules/<route-name>",
+    router=router,
+)
+```
+
+The platform mounts module routers under:
+
+```text
+/api/v1/modules/...
+```
+
+The current module registry can be queried at:
+
+```text
+GET /api/v1/modules
+```
+
+## 3. Platform Responsibility
+
+The platform owns:
+
+- REST API versioning
 - WebSocket log streaming
-- task lifecycle
+- project/workspace management
+- unified task lifecycle
 - cancellation state
 - subprocess execution
-- workspace isolation
+- shared logs and progress events
+- future artifact/report persistence
 
-Module C remains responsible for:
+Backend modules own only their business algorithms and module-specific APIs.
 
-- scheduling plan calculation
-- strategy comparison logic
-- algorithm-specific logs and progress events through `TaskContext`
+## 4. Module 2 Scheduler Invocation
 
-Real build/debug commands are still launched by module A as controlled subprocesses.
+The platform calls `co_debug.scheduler` as ordinary Python functions.
 
-## 3. Task Input JSON
+Real build/debug commands are launched by the platform as controlled subprocesses.
+
+## 5. Task Input JSON
 
 Build task:
 
 ```json
 {
+  "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
   "command": ["make"],
   "work_dir": ".",
@@ -49,6 +99,7 @@ Debug task:
 
 ```json
 {
+  "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
   "executable_path": "build/app",
   "args": [],
@@ -62,6 +113,7 @@ Schedule experiment:
 
 ```json
 {
+  "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
   "strategy": "RESOURCE_AWARE",
   "tasks": [
@@ -79,11 +131,12 @@ Schedule experiment:
 }
 ```
 
-## 4. Task Result JSON
+## 6. Task Result JSON
 
 ```json
 {
   "id": "00000000-0000-0000-0000-000000000000",
+  "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
   "task_type": "BUILD",
   "status": "SUCCEEDED",
@@ -102,13 +155,13 @@ Schedule experiment:
 }
 ```
 
-## 5. How Module C Reports Logs, Progress, and Cancellation
+## 7. Logs, Progress, and Cancellation
 
-Module C receives a `TaskContext` from module A.
+Module 2 scheduler functions receive a `TaskContext` from the platform.
 
 ```python
-def plan_tasks(request, context):
-    context.log("module C scheduling started")
+def plan_tasks(strategy, tasks, context):
+    context.log("co_debug scheduling started")
     context.progress(20, "building ready queue")
     context.check_cancelled()
     context.progress(100, "schedule plan generated")
@@ -117,7 +170,8 @@ def plan_tasks(request, context):
 
 Reporting rules:
 
-- Logs: `context.log(message, stream="module_c")`
+- Logs: `context.log(message, stream="co_debug.scheduler")`
 - Progress: `context.progress(percent, message)`
-- Cancellation: module A owns cancellation state; module C calls `context.check_cancelled()`
-- Frontend channel: frontend connects only to module A through REST and WebSocket
+- Cancellation: the platform owns cancellation state; modules call `context.check_cancelled()`
+- Frontend channel: frontend connects only to the platform through REST and WebSocket
+- WebSocket log endpoint: `/ws/v1/tasks/{task_id}/logs`

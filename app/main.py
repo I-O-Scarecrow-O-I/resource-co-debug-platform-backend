@@ -3,10 +3,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.deps import get_log_service, get_settings
-from app.api.router import api_router
 from app.core.errors import AppError
-from app.schemas.common import ApiResponse
+from app.platform.api.deps import get_log_service, get_settings
+from app.platform.api.router import api_router
+from app.platform.schemas.common import ApiResponse
 
 
 def create_app() -> FastAPI:
@@ -18,7 +18,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="B/S backend foundation for resource-coordinated debugging.",
     )
-    app.include_router(api_router, prefix="/api")
+    app.include_router(api_router, prefix="/api/v1")
 
     app.add_middleware(
         CORSMiddleware,
@@ -35,7 +35,7 @@ def create_app() -> FastAPI:
             content=jsonable_encoder(ApiResponse.failed(exc.message)),
         )
 
-    @app.websocket("/ws/tasks/{task_id}/logs")
+    @app.websocket("/ws/v1/tasks/{task_id}/logs")
     async def stream_task_logs(websocket: WebSocket, task_id: str) -> None:
         log_service = get_log_service()
         await websocket.accept()
@@ -57,3 +57,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+

@@ -1,4 +1,4 @@
-from app.services.metric_service import AcceptanceMetricService
+from app.platform.services.metric_service import AcceptanceMetricService
 
 
 def test_build_success_rate() -> None:
@@ -12,3 +12,4 @@ def test_improvement_rate() -> None:
     service = AcceptanceMetricService()
 
     assert service.improvement_rate(1000, 850) == 15.0
+
