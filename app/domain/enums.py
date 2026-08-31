@@ -1,0 +1,28 @@
+from enum import StrEnum
+
+
+class ProjectStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    READY = "READY"
+    INVALID = "INVALID"
+    ARCHIVED = "ARCHIVED"
+
+
+class TaskType(StrEnum):
+    BUILD = "BUILD"
+    DEBUG = "DEBUG"
+    SCHEDULE_EXPERIMENT = "SCHEDULE_EXPERIMENT"
+    DEPENDENCY_ANALYSIS = "DEPENDENCY_ANALYSIS"
+
+
+class TaskStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class SchedulerStrategy(StrEnum):
+    FIFO_BASELINE = "FIFO_BASELINE"
+    RESOURCE_AWARE = "RESOURCE_AWARE"
