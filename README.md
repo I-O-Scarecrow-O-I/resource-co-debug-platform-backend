@@ -69,7 +69,8 @@ The reusable local environment is documented in `docs/environment.md`.
 See `docs/collaboration-contract.md` for the frontend and module-C coordination contract.
 
 C模块的人工触发方式、自动对比流程和合同指标判断见
-`docs/c-scheduler-usage.md`。
+`docs/C模块调度与对比实验使用说明.md`。
 
-C模块内部开发负载和本地演示方法见 `docs/c-scheduler-benchmark.md`。
+C模块内部开发负载和本地演示方法见
+`docs/C模块内部调度负载与演示说明.md`。
 
