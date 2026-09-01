@@ -1,0 +1,22 @@
+{
+  "name": "c-scheduler-internal-development-workloads",
+  "description": "Internal CPU-bound workloads for validating the C-module FIFO and optimized scheduling flow. These are not customer acceptance cases.",
+  "recommended_core_count": 2,
+  "workloads": [
+    {
+      "name": "case-1-two-long-two-short",
+      "description": "Two long tasks are deliberately placed on the same FIFO core by round-robin ordering.",
+      "durations_seconds": [1.2, 0.3, 1.2, 0.3]
+    },
+    {
+      "name": "case-2-three-level-load",
+      "description": "Three long or medium tasks alternate with short tasks to create an unbalanced FIFO mapping.",
+      "durations_seconds": [1.5, 0.35, 1.0, 0.35, 0.8, 0.35]
+    },
+    {
+      "name": "case-3-descending-heavy-load",
+      "description": "Heavy tasks are placed at every other position so the static FIFO baseline concentrates them on one core.",
+      "durations_seconds": [1.8, 0.4, 1.4, 0.4, 1.0, 0.4]
+    }
+  ]
+}

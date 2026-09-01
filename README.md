@@ -71,3 +71,5 @@ See `docs/collaboration-contract.md` for the frontend and module-C coordination 
 C模块的人工触发方式、自动对比流程和合同指标判断见
 `docs/c-scheduler-usage.md`。
 
+C模块内部开发负载和本地演示方法见 `docs/c-scheduler-benchmark.md`。
+
