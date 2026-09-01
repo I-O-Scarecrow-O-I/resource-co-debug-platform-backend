@@ -87,4 +87,4 @@ async def test_executor_keeps_tasks_on_one_core_in_fifo_order(tmp_path) -> None:
     assert first.task_name == "first"
     assert second.task_name == "second"
     assert second.started_offset_ms >= first.finished_offset_ms
-    assert result.actual_makespan_ms >= first.elapsed_ms + second.elapsed_ms
+    assert result.actual_makespan_ms >= second.finished_offset_ms
