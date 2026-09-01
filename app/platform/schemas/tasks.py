@@ -41,6 +41,21 @@ class ScheduleExperimentRequest(BaseModel):
     project_id: UUID
     strategy: SchedulerStrategy = SchedulerStrategy.RESOURCE_AWARE
     tasks: list[TaskExecutionSpec] = Field(default_factory=list)
+    core_ids: list[int] | None = Field(default=None, min_length=1)
+    timeout_seconds: int | None = Field(default=None, ge=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScheduleWorkloadSpec(BaseModel):
+    name: str
+    tasks: list[TaskExecutionSpec] = Field(min_length=1)
+
+
+class ScheduleComparisonRequest(BaseModel):
+    module: BackendModuleName = BackendModuleName.CO_DEBUG
+    project_id: UUID
+    workloads: list[ScheduleWorkloadSpec] = Field(min_length=1, max_length=3)
+    core_ids: list[int] | None = Field(default=None, min_length=1)
     timeout_seconds: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

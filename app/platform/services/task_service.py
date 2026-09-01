@@ -8,9 +8,16 @@ from app.core.errors import CancellationRequested
 from app.core.time import utc_now
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
-from app.platform.schemas.tasks import BuildTaskRequest, DebugTaskRequest, ScheduleExperimentRequest
+from app.platform.schemas.tasks import (
+    BuildTaskRequest,
+    DebugTaskRequest,
+    ScheduleComparisonRequest,
+    ScheduleExperimentRequest,
+)
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
+from app.platform.services.schedule_comparison_service import ScheduleComparisonService
+from app.platform.services.schedule_execution_service import ScheduleExecutionService
 from app.platform.services.scheduler_service import SchedulerService
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
@@ -24,6 +31,8 @@ class TaskService:
         log_service: TaskLogService,
         process_runner: ProcessRunner,
         scheduler_service: SchedulerService,
+        schedule_execution_service: ScheduleExecutionService,
+        schedule_comparison_service: ScheduleComparisonService,
         default_timeout_seconds: int,
     ) -> None:
         self.workspace_service = workspace_service
@@ -31,6 +40,8 @@ class TaskService:
         self.log_service = log_service
         self.process_runner = process_runner
         self.scheduler_service = scheduler_service
+        self.schedule_execution_service = schedule_execution_service
+        self.schedule_comparison_service = schedule_comparison_service
         self.default_timeout_seconds = default_timeout_seconds
         self._processes: dict[UUID, asyncio.subprocess.Process] = {}
 
@@ -85,6 +96,18 @@ class TaskService:
             metadata=request.metadata,
         )
         self._start_background(lambda: self._run_schedule_experiment(task.id, request))
+        return task
+
+    async def create_schedule_comparison(self, request: ScheduleComparisonRequest) -> TaskRecord:
+        self.workspace_service.require_project(request.project_id)
+        task = self._new_task(
+            module=request.module,
+            project_id=request.project_id,
+            task_type=TaskType.SCHEDULE_COMPARISON,
+            command=["app.platform.services.schedule_comparison_service.compare"],
+            metadata=request.metadata,
+        )
+        self._start_background(lambda: self._run_schedule_comparison(task.id, request))
         return task
 
     def list_tasks(self) -> list[TaskRecord]:
@@ -198,13 +221,89 @@ class TaskService:
                 strategy=request.strategy,
                 tasks=request.tasks,
                 is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
+                core_ids=request.core_ids,
             )
-            task.result = plan.model_dump(mode="json")
-            task.status = TaskStatus.SUCCEEDED
+            cwd = self.workspace_service.resolve_work_dir(request.project_id, ".")
+            execution = await self.schedule_execution_service.execute(
+                plan=plan,
+                tasks=request.tasks,
+                cwd=cwd,
+                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
+                on_log=lambda message, stream: self.log_service.append(
+                    task_id,
+                    message,
+                    stream=stream,
+                ),
+                on_progress=lambda percent, message: self._report_progress(
+                    task,
+                    percent,
+                    message,
+                ),
+                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
+            )
+            task.result = {
+                **plan.model_dump(mode="json"),
+                "execution": execution.model_dump(mode="json"),
+            }
+            task.elapsed_ms = execution.actual_makespan_ms
+            task.exit_code = 0 if execution.all_succeeded else 1
+            task.status = TaskStatus.SUCCEEDED if execution.all_succeeded else TaskStatus.FAILED
+            if not execution.all_succeeded:
+                task.error = "one or more scheduled tasks failed"
             task.progress = 100
             task.finished_at = utc_now()
-            task.elapsed_ms = 0
             self.log_service.append(task_id, "schedule experiment finished", progress=100)
+        except CancellationRequested:
+            self._mark_cancelled(task)
+        except Exception as exc:
+            self._mark_failed(task, str(exc))
+        finally:
+            self.task_store.save(task)
+
+    async def _run_schedule_comparison(
+        self,
+        task_id: UUID,
+        request: ScheduleComparisonRequest,
+    ) -> None:
+        task = self.task_store.require(task_id)
+        task.status = TaskStatus.RUNNING
+        task.started_at = utc_now()
+        task.progress = 5
+        self.log_service.append(task_id, "schedule comparison started", progress=5)
+
+        try:
+            cwd = self.workspace_service.resolve_work_dir(request.project_id, ".")
+            summary = await self.schedule_comparison_service.compare(
+                task_id=task_id,
+                workloads=request.workloads,
+                core_ids=request.core_ids,
+                cwd=cwd,
+                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
+                on_log=lambda message, stream: self.log_service.append(
+                    task_id,
+                    message,
+                    stream=stream,
+                ),
+                on_progress=lambda percent, message: self._report_progress(
+                    task,
+                    percent,
+                    message,
+                ),
+                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
+            )
+            task.result = summary.model_dump(mode="json")
+            task.elapsed_ms = sum(
+                result.fifo.execution.actual_makespan_ms
+                + result.optimized.execution.actual_makespan_ms
+                for result in summary.workload_results
+            )
+            task.exit_code = 0 if summary.all_tasks_succeeded else 1
+            task.status = TaskStatus.SUCCEEDED if summary.all_tasks_succeeded else TaskStatus.FAILED
+            if not summary.all_tasks_succeeded:
+                task.error = "one or more comparison tasks failed"
+            task.progress = 100
+            task.finished_at = utc_now()
+            self.log_service.append(task_id, "schedule comparison finished", progress=100)
         except CancellationRequested:
             self._mark_cancelled(task)
         except Exception as exc:
@@ -217,6 +316,15 @@ class TaskService:
         task.finished_at = utc_now()
         task.error = "cancelled"
         self.log_service.append(task.id, "task cancelled", progress=task.progress)
+
+    def _report_progress(self, task: TaskRecord, percent: int, message: str) -> None:
+        task.progress = percent
+        self.log_service.append(
+            task.id,
+            message,
+            stream="co_debug.executor",
+            progress=percent,
+        )
 
     def _mark_failed(self, task: TaskRecord, message: str) -> None:
         task.status = TaskStatus.FAILED

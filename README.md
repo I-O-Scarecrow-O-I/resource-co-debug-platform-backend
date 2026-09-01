@@ -54,6 +54,7 @@ The reusable local environment is documented in `docs/environment.md`.
 - `POST /api/v1/tasks/build`
 - `POST /api/v1/tasks/debug`
 - `POST /api/v1/tasks/schedule-experiments`
+- `POST /api/v1/tasks/schedule-comparisons`
 - `GET /api/v1/tasks`
 - `GET /api/v1/tasks/{task_id}`
 - `GET /api/v1/tasks/{task_id}/logs`
@@ -66,4 +67,7 @@ The reusable local environment is documented in `docs/environment.md`.
 - `WS /ws/v1/tasks/{task_id}/logs`
 
 See `docs/collaboration-contract.md` for the frontend and module-C coordination contract.
+
+C模块的人工触发方式、自动对比流程和合同指标判断见
+`docs/c-scheduler-usage.md`。
 

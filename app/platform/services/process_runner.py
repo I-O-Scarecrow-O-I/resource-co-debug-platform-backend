@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ ProcessStartedCallback = Callable[[asyncio.subprocess.Process], None]
 class ProcessResult:
     exit_code: int
     elapsed_ms: int
+    affinity_applied: bool = False
 
 
 class ProcessRunner:
@@ -26,6 +28,7 @@ class ProcessRunner:
         on_log: LogCallback,
         is_cancelled: CancelCheck,
         on_process_started: ProcessStartedCallback | None = None,
+        cpu_core: int | None = None,
     ) -> ProcessResult:
         if not command:
             raise ValueError("command must not be empty")
@@ -39,6 +42,7 @@ class ProcessRunner:
         )
         if on_process_started:
             on_process_started(process)
+        affinity_applied = self._apply_cpu_affinity(process.pid, cpu_core, on_log)
 
         readers = [
             asyncio.create_task(self._stream_output(process.stdout, "stdout", on_log)),
@@ -53,11 +57,46 @@ class ProcessRunner:
                 timeout_seconds,
                 is_cancelled,
             )
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
         finally:
             await asyncio.gather(*readers, return_exceptions=True)
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
-        return ProcessResult(exit_code=exit_code, elapsed_ms=elapsed_ms)
+        return ProcessResult(
+            exit_code=exit_code,
+            elapsed_ms=elapsed_ms,
+            affinity_applied=affinity_applied,
+        )
+
+    def _apply_cpu_affinity(
+        self,
+        process_id: int,
+        cpu_core: int | None,
+        on_log: LogCallback,
+    ) -> bool:
+        if cpu_core is None:
+            return False
+
+        set_affinity = getattr(os, "sched_setaffinity", None)
+        if set_affinity is None:
+            on_log(
+                f"CPU affinity for core {cpu_core} is unavailable on this platform",
+                "system",
+            )
+            return False
+
+        try:
+            set_affinity(process_id, {cpu_core})
+        except OSError as exc:
+            on_log(f"failed to bind process to core {cpu_core}: {exc}", "system")
+            return False
+
+        on_log(f"process bound to CPU core {cpu_core}", "system")
+        return True
 
     async def _wait_with_control(
         self,

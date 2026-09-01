@@ -116,6 +116,7 @@ Schedule experiment:
   "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
   "strategy": "RESOURCE_AWARE",
+  "core_ids": [0, 1],
   "tasks": [
     {
       "name": "case-a",
@@ -130,6 +131,55 @@ Schedule experiment:
   "metadata": {}
 }
 ```
+
+`core_ids` is optional. When omitted, the platform supplies the CPU cores visible to the backend
+process. Supplying it explicitly is recommended for reproducible FIFO/optimized comparisons.
+
+The generated schedule plan contains the selected cores, per-task core assignments, estimated core
+loads, and the estimated makespan. The platform then executes each core queue concurrently, keeps
+the tasks assigned to one core in FIFO order, streams subprocess logs, and records the actual
+makespan. CPU affinity is applied on platforms that provide `os.sched_setaffinity`, including the
+target Linux/openEuler environment.
+
+Schedule comparison task:
+
+```json
+{
+  "module": "co_debug",
+  "project_id": "00000000-0000-0000-0000-000000000000",
+  "core_ids": [0, 1],
+  "workloads": [
+    {
+      "name": "case-1",
+      "tasks": [
+        {
+          "name": "long-task",
+          "command": ["make", "run-long"],
+          "estimated_ms": 12000,
+          "depends_on": [],
+          "preferred_core": null,
+          "metadata": {}
+        }
+      ]
+    }
+  ],
+  "timeout_seconds": 300,
+  "metadata": {}
+}
+```
+
+Endpoint: `POST /api/v1/tasks/schedule-comparisons`
+
+The comparison service runs every workload once with `FIFO_BASELINE` and once with
+`RESOURCE_AWARE`. It calculates the per-workload duration spread and improvement rate, then
+calculates the average improvement rate. The contract target is reported as satisfied only when
+three workloads are provided, every FIFO workload has at least 200% duration spread, every command
+succeeds, and the average improvement rate is at least 15%.
+
+The caller does not need to provide accurate duration estimates for the comparison flow. The FIFO
+run is also the profiling run: its actual per-task elapsed times replace `estimated_ms` before the
+`RESOURCE_AWARE` plan is generated. The result field `cost_estimation_source` is therefore
+`FIFO_ACTUAL_DURATION`.
 
 ## 6. Task Result JSON
 

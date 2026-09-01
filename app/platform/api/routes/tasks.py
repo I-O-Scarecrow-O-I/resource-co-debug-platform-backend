@@ -8,6 +8,7 @@ from app.platform.schemas.common import ApiResponse, LogEvent
 from app.platform.schemas.tasks import (
     BuildTaskRequest,
     DebugTaskRequest,
+    ScheduleComparisonRequest,
     ScheduleExperimentRequest,
     TaskResponse,
 )
@@ -41,6 +42,15 @@ async def create_schedule_experiment(
     task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> ApiResponse[TaskResponse]:
     task = await task_service.create_schedule_experiment(request)
+    return ApiResponse.ok(TaskResponse.from_record(task))
+
+
+@router.post("/schedule-comparisons", response_model=ApiResponse[TaskResponse])
+async def create_schedule_comparison(
+    request: ScheduleComparisonRequest,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+) -> ApiResponse[TaskResponse]:
+    task = await task_service.create_schedule_comparison(request)
     return ApiResponse.ok(TaskResponse.from_record(task))
 
 
