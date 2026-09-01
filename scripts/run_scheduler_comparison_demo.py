@@ -27,8 +27,13 @@ def default_core_ids(core_count: int) -> list[int]:
         try:
             available = sorted(get_affinity(0))
         except OSError:
-            available = []
-        if len(available) >= core_count:
+            pass
+        else:
+            if len(available) < core_count:
+                raise RuntimeError(
+                    f"the demo requires {core_count} CPU cores, but process affinity "
+                    f"allows only {len(available)}: {available}"
+                )
             return available[:core_count]
 
     available_count = os.cpu_count() or 1

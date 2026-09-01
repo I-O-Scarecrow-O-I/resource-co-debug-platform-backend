@@ -37,8 +37,8 @@ def main() -> None:
         parser.error("--duration-seconds must be greater than zero")
 
     result = burn_cpu(args.duration_seconds, args.seed)
-    result["label"] = args.label
-    print(json.dumps(result, ensure_ascii=False))
+    output: dict[str, int | float | str] = {**result, "label": args.label}
+    print(json.dumps(output, ensure_ascii=False))
 
 
 if __name__ == "__main__":

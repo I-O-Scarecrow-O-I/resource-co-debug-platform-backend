@@ -1,7 +1,14 @@
+import os
 from pathlib import Path
 
+import pytest
+
 from app.platform.services.metric_service import AcceptanceMetricService
-from scripts.run_scheduler_comparison_demo import build_comparison_payload, load_workload_config
+from scripts.run_scheduler_comparison_demo import (
+    build_comparison_payload,
+    default_core_ids,
+    load_workload_config,
+)
 from scripts.scheduler_benchmark_worker import burn_cpu
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,3 +57,13 @@ def test_benchmark_worker_performs_cpu_work() -> None:
 
     assert result["elapsed_seconds"] >= 0.005
     assert result["iterations"] > 0
+
+
+def test_default_cores_reject_insufficient_process_affinity(monkeypatch) -> None:
+    monkeypatch.setattr(os, "sched_getaffinity", lambda process_id: {7}, raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"requires 2 CPU cores, but process affinity allows only 1: \[7\]",
+    ):
+        default_core_ids(2)
