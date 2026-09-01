@@ -73,7 +73,7 @@ def _normalize_core_ids(core_ids: list[int] | None) -> list[int]:
 def _validate_tasks(tasks: list[TaskExecutionSpec]) -> None:
     names = [task.name for task in tasks]
     if len(set(names)) != len(names):
-        raise ValueError("task names must be unique within a schedule experiment")
+        raise ValueError("task names must be unique within a scheduler workload")
     if any(task.depends_on for task in tasks):
         raise ValueError("task dependencies are not supported by the minimal scheduler")
 

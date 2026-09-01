@@ -107,6 +107,23 @@ def test_plan_rejects_duplicate_core_ids() -> None:
         raise AssertionError("duplicate core IDs should be rejected")
 
 
+def test_plan_rejects_duplicate_task_names_with_generic_message() -> None:
+    try:
+        plan_tasks(
+            strategy=SchedulerStrategy.FIFO_BASELINE,
+            tasks=[
+                TaskExecutionSpec(name="duplicate", command=["first"]),
+                TaskExecutionSpec(name="duplicate", command=["second"]),
+            ],
+            context=_context(),
+            core_ids=[0],
+        )
+    except ValueError as exc:
+        assert str(exc) == "task names must be unique within a scheduler workload"
+    else:
+        raise AssertionError("duplicate task names should be rejected")
+
+
 def test_plan_rejects_dependencies_until_dependency_scheduling_is_implemented() -> None:
     try:
         plan_tasks(

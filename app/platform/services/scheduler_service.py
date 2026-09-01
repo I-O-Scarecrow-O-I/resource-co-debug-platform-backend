@@ -38,11 +38,25 @@ class SchedulerService:
             ),
             is_cancelled=is_cancelled,
         )
-        selected_cores = core_ids or list(range(os.cpu_count() or 1))
+        selected_cores = _default_core_ids() if core_ids is None else core_ids
         return plan_tasks(
             strategy=strategy,
             tasks=tasks,
             context=context,
             core_ids=selected_cores,
         )
+
+
+def _default_core_ids() -> list[int]:
+    get_affinity = getattr(os, "sched_getaffinity", None)
+    if get_affinity is not None:
+        try:
+            allowed_cores = sorted(get_affinity(0))
+        except OSError:
+            pass
+        else:
+            if allowed_cores:
+                return allowed_cores
+
+    return list(range(os.cpu_count() or 1))
 
