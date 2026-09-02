@@ -184,19 +184,80 @@ POST /api/v1/tasks/{task_id}/cancel
 
 ## 8. 主要结果字段
 
-对比任务完成后，`result`中主要包含：
+对比任务完成后，任务查询接口返回的`data.result`结构如下：
+
+```text
+result
+├─ workload_results
+│  ├─ 第1组负载
+│  │  ├─ workload_name
+│  │  ├─ duration_spread_rate
+│  │  ├─ improvement_rate
+│  │  ├─ fifo
+│  │  └─ optimized
+│  ├─ 第2组负载
+│  └─ 第3组负载
+├─ workload_count
+├─ average_improvement_rate
+├─ has_required_workload_count
+├─ all_duration_spreads_eligible
+├─ all_tasks_succeeded
+├─ meets_average_improvement_requirement
+└─ meets_contract_target
+```
+
+### 8.1 `result`顶层汇总字段
 
 | 字段 | 说明 |
 | --- | --- |
-| `workload_results` | 每组负载的FIFO与优化结果 |
-| `duration_spread_rate` | 单组任务时耗相对差异 |
-| `improvement_rate` | 单组优化改进率 |
+| `workload_results` | 每组负载的详细对比结果数组 |
+| `workload_count` | 实际提交的负载组数 |
 | `average_improvement_rate` | 多组平均改进率 |
 | `has_required_workload_count` | 是否提交了3组负载 |
 | `all_duration_spreads_eligible` | 每组时耗差异是否达到200% |
 | `all_tasks_succeeded` | 所有命令是否执行成功 |
 | `meets_average_improvement_requirement` | 平均改进率是否达到15% |
 | `meets_contract_target` | 当前口径下是否整体满足指标 |
+
+### 8.2 `workload_results`中的单组字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `workload_name` | 当前负载组名称 |
+| `cost_estimation_source` | 优化调度任务开销来源，当前为FIFO实测耗时 |
+| `fifo` | FIFO方案的调度计划和实际执行结果 |
+| `optimized` | 优化方案的调度计划和实际执行结果 |
+| `duration_spread_rate` | 当前组内任务时耗相对差异 |
+| `improvement_rate` | 当前组优化方案相对FIFO的改进率 |
+| `meets_duration_spread_requirement` | 当前组时耗差异是否达到200% |
+| `meets_improvement_requirement` | 当前组改进率是否达到15% |
+
+假设已经执行：
+
+```python
+task_result = response_json["data"]
+```
+
+读取第一组改进率：
+
+```python
+task_result["result"]["workload_results"][0]["improvement_rate"]
+```
+
+读取3组平均改进率：
+
+```python
+task_result["result"]["average_improvement_rate"]
+```
+
+### 8.3 `fifo`和`optimized`内部字段
+
+每种方案均包含：
+
+| 字段 | 说明 |
+| --- | --- |
+| `plan` | 调度策略、任务顺序、任务—核心分配和预计总完成时间 |
+| `execution` | 每个任务的实际执行记录、实际总完成时间和成功状态 |
 
 当前计算公式：
 
