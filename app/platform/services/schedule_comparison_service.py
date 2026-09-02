@@ -40,6 +40,7 @@ class ScheduleComparisonService:
         on_log: LogCallback,
         on_progress: ProgressCallback,
         is_cancelled: CancelCheck,
+        workspace_factory: Callable[[], Path] | None = None,
     ) -> ScheduleComparisonSummary:
         workload_results: list[WorkloadComparisonResult] = []
         total_runs = len(workloads) * 2
@@ -50,12 +51,13 @@ class ScheduleComparisonService:
                 raise CancellationRequested()
 
             on_log(f"comparison workload started: {workload.name}", "co_debug.comparison")
+            fifo_cwd = workspace_factory() if workspace_factory else cwd
             fifo = await self._run_strategy(
                 task_id=task_id,
                 workload=workload,
                 strategy=SchedulerStrategy.FIFO_BASELINE,
                 core_ids=core_ids,
-                cwd=cwd,
+                cwd=fifo_cwd,
                 timeout_seconds=timeout_seconds,
                 run_index=run_index,
                 total_runs=total_runs,
@@ -69,12 +71,15 @@ class ScheduleComparisonService:
                 f"FIFO timings applied as optimized estimates for {workload.name}",
                 "co_debug.comparison",
             )
+            optimized_cwd = (
+                workspace_factory() if workspace_factory else cwd
+            )
             optimized = await self._run_strategy(
                 task_id=task_id,
                 workload=profiled_workload,
                 strategy=SchedulerStrategy.RESOURCE_AWARE,
                 core_ids=core_ids,
-                cwd=cwd,
+                cwd=optimized_cwd,
                 timeout_seconds=timeout_seconds,
                 run_index=run_index,
                 total_runs=total_runs,

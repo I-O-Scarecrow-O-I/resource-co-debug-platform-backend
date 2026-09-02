@@ -101,6 +101,7 @@ Debug task:
 {
   "module": "co_debug",
   "project_id": "00000000-0000-0000-0000-000000000000",
+  "build_task_id": null,
   "executable_path": "build/app",
   "args": [],
   "work_dir": ".",
@@ -108,6 +109,11 @@ Debug task:
   "metadata": {}
 }
 ```
+
+When debugging an executable produced by a platform build task, set `build_task_id` to the
+successful build task ID. The platform then resolves the executable from that build's retained
+workspace and runs GDB in a separate copy. If omitted, `executable_path` is resolved from the
+uploaded project source.
 
 Schedule experiment:
 

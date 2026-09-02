@@ -1,10 +1,11 @@
 import asyncio
 import threading
 from collections.abc import Callable, Coroutine
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 from uuid import UUID, uuid4
 
-from app.core.errors import CancellationRequested
+from app.core.errors import AppError, CancellationRequested
 from app.core.time import utc_now
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
@@ -43,7 +44,12 @@ class TaskService:
         self.schedule_execution_service = schedule_execution_service
         self.schedule_comparison_service = schedule_comparison_service
         self.default_timeout_seconds = default_timeout_seconds
-        self._processes: dict[UUID, asyncio.subprocess.Process] = {}
+        self._background_executor = ThreadPoolExecutor(
+            max_workers=8,
+            thread_name_prefix="backend-task",
+        )
+        self._background_futures: dict[UUID, Future[None]] = {}
+        self._background_lock = threading.Lock()
 
     async def create_build_task(self, request: BuildTaskRequest) -> TaskRecord:
         self.workspace_service.require_project(request.project_id)
@@ -55,19 +61,46 @@ class TaskService:
             metadata=request.metadata,
         )
         self._start_background(
+            task.id,
             lambda: self._run_process_task(
                 task_id=task.id,
                 project_id=request.project_id,
                 command=request.command,
                 work_dir=request.work_dir,
                 timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
+                workspace_name="workspace",
             )
         )
         return task
 
     async def create_debug_task(self, request: DebugTaskRequest) -> TaskRecord:
-        self.workspace_service.require_project(request.project_id)
-        command = ["gdb", "--interpreter=mi2", request.executable_path, *request.args]
+        project = self.workspace_service.require_project(request.project_id)
+        source_workspace = None
+        if request.build_task_id is not None:
+            build_task = self.task_store.require(request.build_task_id)
+            if (
+                build_task.project_id != request.project_id
+                or build_task.task_type != TaskType.BUILD
+            ):
+                raise AppError("build_task_id must reference a build task in the same project")
+            if build_task.status != TaskStatus.SUCCEEDED:
+                raise AppError("build task must succeed before starting debug")
+            source_workspace = self.workspace_service.resolve_task_workspace(
+                request.project_id, request.build_task_id
+            )
+            executable = self.workspace_service.resolve_path_in_workspace(
+                source_workspace, request.executable_path
+            )
+            source_root = source_workspace.resolve()
+        else:
+            executable = self.workspace_service.resolve_project_path(
+                request.project_id, request.executable_path
+            )
+            source_root = project.source_path.resolve()
+        if not executable.is_file():
+            raise AppError(f"debug executable does not exist: {request.executable_path}")
+        executable_relative_path = executable.relative_to(source_root)
+        command = ["gdb", "--interpreter=mi2", str(executable_relative_path), *request.args]
         task = self._new_task(
             module=request.module,
             project_id=request.project_id,
@@ -76,12 +109,15 @@ class TaskService:
             metadata=request.metadata,
         )
         self._start_background(
+            task.id,
             lambda: self._run_process_task(
                 task_id=task.id,
                 project_id=request.project_id,
                 command=command,
                 work_dir=request.work_dir,
                 timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
+                source_workspace=source_workspace,
+                executable_relative_path=str(executable_relative_path),
             )
         )
         return task
@@ -95,7 +131,7 @@ class TaskService:
             command=["app.modules.co_debug.scheduler.scheduler.plan_tasks"],
             metadata=request.metadata,
         )
-        self._start_background(lambda: self._run_schedule_experiment(task.id, request))
+        self._start_background(task.id, lambda: self._run_schedule_experiment(task.id, request))
         return task
 
     async def create_schedule_comparison(self, request: ScheduleComparisonRequest) -> TaskRecord:
@@ -107,7 +143,7 @@ class TaskService:
             command=["app.platform.services.schedule_comparison_service.compare"],
             metadata=request.metadata,
         )
-        self._start_background(lambda: self._run_schedule_comparison(task.id, request))
+        self._start_background(task.id, lambda: self._run_schedule_comparison(task.id, request))
         return task
 
     def list_tasks(self) -> list[TaskRecord]:
@@ -118,9 +154,11 @@ class TaskService:
 
     async def cancel_task(self, task_id: UUID) -> TaskRecord:
         task = self.task_store.request_cancel(task_id)
-        process = self._processes.get(task_id)
-        if process is not None and process.returncode is None:
-            process.kill()
+        with self._background_lock:
+            future = self._background_futures.get(task_id)
+        if task.status == TaskStatus.CANCELLED and future is not None:
+            future.cancel()
+        if task.status == TaskStatus.RUNNING:
             self.log_service.append(task_id, "process cancellation requested")
         return task
 
@@ -145,9 +183,23 @@ class TaskService:
         self.task_store.save(task)
         return task
 
-    def _start_background(self, task_factory: Callable[[], Coroutine[Any, Any, None]]) -> None:
-        thread = threading.Thread(target=lambda: asyncio.run(task_factory()), daemon=True)
-        thread.start()
+    def _start_background(
+        self,
+        task_id: UUID,
+        task_factory: Callable[[], Coroutine[Any, Any, None]],
+    ) -> None:
+        def run_factory() -> None:
+            asyncio.run(task_factory())
+
+        future = self._background_executor.submit(run_factory)
+        with self._background_lock:
+            self._background_futures[task_id] = future
+        future.add_done_callback(lambda completed: self._forget_background(task_id, completed))
+
+    def _forget_background(self, task_id: UUID, future: Future[None]) -> None:
+        with self._background_lock:
+            if self._background_futures.get(task_id) is future:
+                self._background_futures.pop(task_id, None)
 
     async def _run_process_task(
         self,
@@ -156,17 +208,34 @@ class TaskService:
         command: list[str],
         work_dir: str,
         timeout_seconds: int,
+        source_workspace=None,
+        workspace_name: str | None = None,
+        executable_relative_path: str | None = None,
     ) -> None:
-        task = self.task_store.require(task_id)
-        task.status = TaskStatus.RUNNING
-        task.started_at = utc_now()
+        task = self.task_store.try_start(task_id)
+        if task is None:
+            return
         task.progress = 5
         self.log_service.append(task_id, f"task started: {command}", progress=5)
 
+        task_workspace = None
         try:
-            cwd = self.workspace_service.resolve_work_dir(project_id, work_dir)
+            task_workspace = self.workspace_service.create_task_workspace(
+                project_id,
+                task_id,
+                source_path=source_workspace,
+                workspace_name=workspace_name,
+            )
+            cwd = self.workspace_service.resolve_work_dir_in_workspace(task_workspace, work_dir)
+            process_command = list(command)
+            if executable_relative_path is not None:
+                process_command[2] = str(
+                    self.workspace_service.resolve_path_in_workspace(
+                        task_workspace, executable_relative_path
+                    )
+                )
             result = await self.process_runner.run(
-                command=command,
+                command=process_command,
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
                 on_log=lambda message, stream: self.log_service.append(
@@ -175,7 +244,6 @@ class TaskService:
                     stream=stream,
                 ),
                 is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
-                on_process_started=lambda process: self._processes.__setitem__(task_id, process),
             )
             task.finished_at = utc_now()
             task.exit_code = result.exit_code
@@ -184,6 +252,11 @@ class TaskService:
             if result.exit_code == 0:
                 task.status = TaskStatus.SUCCEEDED
                 task.result = {"success": True}
+                if task.task_type == TaskType.BUILD:
+                    task.result["artifact"] = {
+                        "build_task_id": str(task.id),
+                        "workspace": "workspace",
+                    }
             else:
                 task.status = TaskStatus.FAILED
                 task.error = f"command exited with code {result.exit_code}"
@@ -201,17 +274,18 @@ class TaskService:
         except Exception as exc:
             self._mark_failed(task, str(exc))
         finally:
-            self._processes.pop(task_id, None)
             self.task_store.save(task)
+            if task.task_type != TaskType.BUILD or task.status != TaskStatus.SUCCEEDED:
+                self.workspace_service.cleanup_task_workspaces(project_id, task_id)
 
     async def _run_schedule_experiment(
         self,
         task_id: UUID,
         request: ScheduleExperimentRequest,
     ) -> None:
-        task = self.task_store.require(task_id)
-        task.status = TaskStatus.RUNNING
-        task.started_at = utc_now()
+        task = self.task_store.try_start(task_id)
+        if task is None:
+            return
         task.progress = 10
         self.log_service.append(task_id, "schedule experiment started", progress=10)
 
@@ -223,7 +297,7 @@ class TaskService:
                 is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
                 core_ids=request.core_ids,
             )
-            cwd = self.workspace_service.resolve_work_dir(request.project_id, ".")
+            cwd = self.workspace_service.create_task_workspace(request.project_id, task_id)
             execution = await self.schedule_execution_service.execute(
                 plan=plan,
                 tasks=request.tasks,
@@ -259,15 +333,16 @@ class TaskService:
             self._mark_failed(task, str(exc))
         finally:
             self.task_store.save(task)
+            self.workspace_service.cleanup_task_workspaces(request.project_id, task_id)
 
     async def _run_schedule_comparison(
         self,
         task_id: UUID,
         request: ScheduleComparisonRequest,
     ) -> None:
-        task = self.task_store.require(task_id)
-        task.status = TaskStatus.RUNNING
-        task.started_at = utc_now()
+        task = self.task_store.try_start(task_id)
+        if task is None:
+            return
         task.progress = 5
         self.log_service.append(task_id, "schedule comparison started", progress=5)
 
@@ -290,6 +365,9 @@ class TaskService:
                     message,
                 ),
                 is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
+                workspace_factory=lambda: self.workspace_service.create_task_workspace(
+                    request.project_id, task_id
+                ),
             )
             task.result = summary.model_dump(mode="json")
             task.elapsed_ms = sum(
@@ -310,6 +388,7 @@ class TaskService:
             self._mark_failed(task, str(exc))
         finally:
             self.task_store.save(task)
+            self.workspace_service.cleanup_task_workspaces(request.project_id, task_id)
 
     def _mark_cancelled(self, task: TaskRecord) -> None:
         task.status = TaskStatus.CANCELLED

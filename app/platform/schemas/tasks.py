@@ -29,6 +29,7 @@ class BuildTaskRequest(BaseModel):
 class DebugTaskRequest(BaseModel):
     module: BackendModuleName = BackendModuleName.CO_DEBUG
     project_id: UUID
+    build_task_id: UUID | None = None
     executable_path: str
     args: list[str] = Field(default_factory=list)
     work_dir: str = "."

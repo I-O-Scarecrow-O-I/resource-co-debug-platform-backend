@@ -28,6 +28,7 @@ class ApiResponse(BaseModel, Generic[T]):
 
 class LogEvent(BaseModel):
     task_id: UUID | str
+    sequence: int = Field(default=0, ge=0)
     timestamp: datetime
     stream: str = Field(examples=["stdout", "stderr", "system", "co_debug.scheduler"])
     message: str
