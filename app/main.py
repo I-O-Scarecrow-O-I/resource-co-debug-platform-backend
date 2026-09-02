@@ -1,12 +1,33 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.errors import AppError
-from app.platform.api.deps import get_log_service, get_settings
+from app.platform.api.deps import (
+    clear_task_service_cache,
+    get_log_service,
+    get_settings,
+    get_task_service,
+)
 from app.platform.api.router import api_router
 from app.platform.schemas.common import ApiResponse
+from app.platform.services.task_service import TaskService
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    try:
+        task_service: TaskService = get_task_service()
+        await task_service.startup()
+        try:
+            yield
+        finally:
+            await task_service.shutdown()
+    finally:
+        clear_task_service_cache()
 
 
 def create_app() -> FastAPI:
@@ -17,6 +38,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         description="B/S backend foundation for resource-coordinated debugging.",
+        lifespan=lifespan,
     )
     app.include_router(api_router, prefix="/api/v1")
 
@@ -40,14 +62,15 @@ def create_app() -> FastAPI:
         log_service = get_log_service()
         await websocket.accept()
 
-        for event in log_service.history(task_id):
-            await websocket.send_json(event.model_dump(mode="json"))
-
-        queue = log_service.subscribe(task_id)
+        history, queue, cutover_sequence = log_service.subscribe_with_history(task_id)
         try:
+            for event in history:
+                await websocket.send_json(event.model_dump(mode="json"))
+
             while True:
                 event = await queue.get()
-                await websocket.send_json(event.model_dump(mode="json"))
+                if event.sequence > cutover_sequence:
+                    await websocket.send_json(event.model_dump(mode="json"))
         except WebSocketDisconnect:
             pass
         finally:

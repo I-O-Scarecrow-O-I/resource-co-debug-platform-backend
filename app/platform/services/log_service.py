@@ -63,6 +63,18 @@ class TaskLogService:
             self._subscribers[str(task_id)].add(subscriber)
         return queue
 
+    def subscribe_with_history(
+        self, task_id: UUID | str
+    ) -> tuple[list[LogEvent], asyncio.Queue[LogEvent], int]:
+        key = str(task_id)
+        queue: asyncio.Queue[LogEvent] = asyncio.Queue()
+        subscriber = _LogSubscriber(loop=asyncio.get_running_loop(), queue=queue)
+        with self._lock:
+            history = list(self._logs[key])
+            self._subscribers[key].add(subscriber)
+            cutover_sequence = self._sequences[key]
+        return history, queue, cutover_sequence
+
     def unsubscribe(self, task_id: UUID | str, queue: asyncio.Queue[LogEvent]) -> None:
         key = str(task_id)
         with self._lock:

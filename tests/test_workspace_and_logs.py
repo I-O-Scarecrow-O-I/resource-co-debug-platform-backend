@@ -6,7 +6,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 import pytest
-from fastapi import UploadFile
+from fastapi import UploadFile, WebSocketDisconnect
 
 from app.core.time import utc_now
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
@@ -68,6 +68,70 @@ async def test_log_history_and_subscription_keep_sequence_order() -> None:
     assert [event.sequence for event in streamed] == [event.sequence for event in history]
     assert [event.message for event in streamed] == [event.message for event in history]
     service.unsubscribe(task_id, queue)
+
+
+@pytest.mark.asyncio
+async def test_log_history_to_realtime_switch_has_no_gaps_or_duplicates(monkeypatch) -> None:
+    import app.main as main
+
+    service = TaskLogService(max_lines=20)
+    task_id = uuid4()
+    service.append(task_id, "history")
+
+    class SwitchingWebSocket:
+        def __init__(self) -> None:
+            self.events: list[dict[str, object]] = []
+
+        async def accept(self) -> None:
+            pass
+
+        async def send_json(self, event: dict[str, object]) -> None:
+            self.events.append(event)
+            if len(self.events) == 1:
+                await asyncio.to_thread(service.append, task_id, "realtime")
+            else:
+                raise WebSocketDisconnect()
+
+    websocket = SwitchingWebSocket()
+    endpoint = next(
+        route.endpoint
+        for route in main.app.routes
+        if getattr(route, "path", None) == "/ws/v1/tasks/{task_id}/logs"
+    )
+    monkeypatch.setattr(main, "get_log_service", lambda: service)
+
+    await asyncio.wait_for(endpoint(websocket, str(task_id)), timeout=1)
+
+    assert [event["sequence"] for event in websocket.events] == [1, 2]
+    assert [event["message"] for event in websocket.events] == ["history", "realtime"]
+
+
+@pytest.mark.asyncio
+async def test_log_history_send_failure_unsubscribes(monkeypatch) -> None:
+    import app.main as main
+
+    service = TaskLogService(max_lines=20)
+    task_id = uuid4()
+    service.append(task_id, "history")
+
+    class FailingWebSocket:
+        async def accept(self) -> None:
+            pass
+
+        async def send_json(self, _: dict[str, object]) -> None:
+            raise RuntimeError("connection failed")
+
+    endpoint = next(
+        route.endpoint
+        for route in main.app.routes
+        if getattr(route, "path", None) == "/ws/v1/tasks/{task_id}/logs"
+    )
+    monkeypatch.setattr(main, "get_log_service", lambda: service)
+
+    with pytest.raises(RuntimeError, match="connection failed"):
+        await endpoint(FailingWebSocket(), str(task_id))
+
+    assert not service._subscribers[str(task_id)]
 
 
 def test_cancelled_pending_task_cannot_start() -> None:

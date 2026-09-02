@@ -41,7 +41,9 @@ class ScheduleExperimentRequest(BaseModel):
     module: BackendModuleName = BackendModuleName.CO_DEBUG
     project_id: UUID
     strategy: SchedulerStrategy = SchedulerStrategy.RESOURCE_AWARE
-    tasks: list[TaskExecutionSpec] = Field(default_factory=list)
+    tasks: list[TaskExecutionSpec] = Field(
+        default_factory=list, min_length=1, validate_default=True
+    )
     core_ids: list[int] | None = Field(default=None, min_length=1)
     timeout_seconds: int | None = Field(default=None, ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)

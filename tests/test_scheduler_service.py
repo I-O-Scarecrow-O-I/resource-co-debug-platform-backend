@@ -34,3 +34,16 @@ def test_scheduler_does_not_treat_explicit_empty_cores_as_default() -> None:
             core_ids=[],
             is_cancelled=lambda: False,
         )
+
+
+def test_scheduler_rejects_cores_outside_process_affinity(monkeypatch) -> None:
+    monkeypatch.setattr(os, "sched_getaffinity", lambda process_id: {2, 4}, raising=False)
+
+    with pytest.raises(ValueError, match=r"unavailable CPU cores: \[3\]"):
+        _service().create_plan(
+            task_id=uuid4(),
+            strategy=SchedulerStrategy.FIFO_BASELINE,
+            tasks=[],
+            core_ids=[3],
+            is_cancelled=lambda: False,
+        )

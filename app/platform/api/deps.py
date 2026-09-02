@@ -72,6 +72,10 @@ def get_task_service() -> TaskService:
     )
 
 
+def clear_task_service_cache() -> None:
+    get_task_service.cache_clear()
+
+
 @lru_cache
 def get_dependency_service() -> DependencyAnalysisService:
     return DependencyAnalysisService(workspace_service=get_workspace_service())

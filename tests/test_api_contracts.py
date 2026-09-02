@@ -6,6 +6,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.platform.services.scheduler_service import _default_core_ids
 
 client = TestClient(app)
 
@@ -54,6 +55,7 @@ def test_co_debug_metrics_route_is_mounted_under_module_prefix() -> None:
 
 def test_schedule_experiment_contract() -> None:
     project = _create_project()
+    core_ids = _default_core_ids()
 
     create_response = client.post(
         "/api/v1/tasks/schedule-experiments",
@@ -61,7 +63,7 @@ def test_schedule_experiment_contract() -> None:
             "module": "co_debug",
             "project_id": project["id"],
             "strategy": "RESOURCE_AWARE",
-            "core_ids": [0, 1],
+            "core_ids": core_ids,
             "tasks": [
                 {
                     "name": "short",
@@ -83,27 +85,45 @@ def test_schedule_experiment_contract() -> None:
     assert task["status"] == "SUCCEEDED"
     assert task["module"] == "co_debug"
     assert [item["name"] for item in task["result"]["ordered_tasks"]] == ["long", "short"]
-    assert task["result"]["core_ids"] == [0, 1]
-    assert task["result"]["estimated_makespan_ms"] == 3000
+    assert task["result"]["core_ids"] == core_ids
+    assert task["result"]["estimated_makespan_ms"] == (3000 if len(core_ids) > 1 else 4000)
     assert task["result"]["assignments"] == [
         {
             "task_name": "long",
-            "core_id": 0,
+            "core_id": core_ids[0],
             "queue_position": 0,
             "estimated_start_ms": 0,
             "estimated_finish_ms": 3000,
         },
         {
             "task_name": "short",
-            "core_id": 1,
-            "queue_position": 0,
-            "estimated_start_ms": 0,
-            "estimated_finish_ms": 1000,
+            "core_id": core_ids[1] if len(core_ids) > 1 else core_ids[0],
+            "queue_position": 0 if len(core_ids) > 1 else 1,
+            "estimated_start_ms": 0 if len(core_ids) > 1 else 3000,
+            "estimated_finish_ms": 1000 if len(core_ids) > 1 else 4000,
         },
     ]
     assert task["result"]["execution"]["all_succeeded"] is True
     assert task["result"]["execution"]["actual_makespan_ms"] > 0
     assert task["elapsed_ms"] == task["result"]["execution"]["actual_makespan_ms"]
+
+
+def test_schedule_experiment_rejects_missing_or_empty_tasks() -> None:
+    project = _create_project()
+    payload = {
+        "module": "co_debug",
+        "project_id": project["id"],
+        "strategy": "RESOURCE_AWARE",
+        "core_ids": _default_core_ids(),
+    }
+
+    missing_tasks = client.post("/api/v1/tasks/schedule-experiments", json=payload)
+    empty_tasks = client.post(
+        "/api/v1/tasks/schedule-experiments", json={**payload, "tasks": []}
+    )
+
+    assert missing_tasks.status_code == 422
+    assert empty_tasks.status_code == 422
 
 
 def test_build_task_runs_controlled_subprocess() -> None:
@@ -137,7 +157,7 @@ def test_schedule_comparison_runs_fifo_and_optimized_strategies() -> None:
         json={
             "module": "co_debug",
             "project_id": project["id"],
-            "core_ids": [0, 1],
+            "core_ids": _default_core_ids(),
             "workloads": [
                 {
                     "name": "development-case",

@@ -38,7 +38,14 @@ class SchedulerService:
             ),
             is_cancelled=is_cancelled,
         )
-        selected_cores = _default_core_ids() if core_ids is None else core_ids
+        allowed_cores = _default_core_ids()
+        selected_cores = allowed_cores if core_ids is None else core_ids
+        invalid_cores = sorted(set(selected_cores) - set(allowed_cores))
+        if invalid_cores:
+            raise ValueError(
+                f"core_ids contain unavailable CPU cores: {invalid_cores}; "
+                f"allowed cores are {allowed_cores}"
+            )
         return plan_tasks(
             strategy=strategy,
             tasks=tasks,

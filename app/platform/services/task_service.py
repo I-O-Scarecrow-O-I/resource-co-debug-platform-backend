@@ -50,8 +50,11 @@ class TaskService:
         )
         self._background_futures: dict[UUID, Future[None]] = {}
         self._background_lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
+        self._lifecycle_state = "RUNNING"
 
     async def create_build_task(self, request: BuildTaskRequest) -> TaskRecord:
+        self._ensure_accepting_tasks()
         self.workspace_service.require_project(request.project_id)
         task = self._new_task(
             module=request.module,
@@ -74,6 +77,7 @@ class TaskService:
         return task
 
     async def create_debug_task(self, request: DebugTaskRequest) -> TaskRecord:
+        self._ensure_accepting_tasks()
         project = self.workspace_service.require_project(request.project_id)
         source_workspace = None
         if request.build_task_id is not None:
@@ -123,6 +127,7 @@ class TaskService:
         return task
 
     async def create_schedule_experiment(self, request: ScheduleExperimentRequest) -> TaskRecord:
+        self._ensure_accepting_tasks()
         self.workspace_service.require_project(request.project_id)
         task = self._new_task(
             module=request.module,
@@ -135,6 +140,7 @@ class TaskService:
         return task
 
     async def create_schedule_comparison(self, request: ScheduleComparisonRequest) -> TaskRecord:
+        self._ensure_accepting_tasks()
         self.workspace_service.require_project(request.project_id)
         task = self._new_task(
             module=request.module,
@@ -151,6 +157,40 @@ class TaskService:
 
     def require_task(self, task_id: UUID) -> TaskRecord:
         return self.task_store.require(task_id)
+
+    async def startup(self) -> None:
+        with self._lifecycle_lock:
+            if self._lifecycle_state != "RUNNING":
+                raise AppError("task service is not accepting tasks")
+
+    async def shutdown(self, grace_seconds: float = 5.0) -> None:
+        with self._lifecycle_lock:
+            if self._lifecycle_state == "CLOSED":
+                return
+            self._lifecycle_state = "CLOSING"
+
+        for task in self.task_store.list():
+            if task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+                self.task_store.request_cancel(task.id)
+
+        with self._background_lock:
+            futures = list(self._background_futures.values())
+        for future in futures:
+            future.cancel()
+
+        deadline = asyncio.get_running_loop().time() + max(grace_seconds, 0)
+        while True:
+            with self._background_lock:
+                active_futures = [
+                    future for future in self._background_futures.values() if not future.done()
+                ]
+            if not active_futures or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.05)
+
+        with self._lifecycle_lock:
+            self._background_executor.shutdown(wait=False, cancel_futures=True)
+            self._lifecycle_state = "CLOSED"
 
     async def cancel_task(self, task_id: UUID) -> TaskRecord:
         task = self.task_store.request_cancel(task_id)
@@ -191,10 +231,21 @@ class TaskService:
         def run_factory() -> None:
             asyncio.run(task_factory())
 
-        future = self._background_executor.submit(run_factory)
-        with self._background_lock:
-            self._background_futures[task_id] = future
+        with self._lifecycle_lock:
+            try:
+                self._ensure_accepting_tasks()
+            except AppError:
+                self.task_store.request_cancel(task_id)
+                raise
+            future = self._background_executor.submit(run_factory)
+            with self._background_lock:
+                self._background_futures[task_id] = future
         future.add_done_callback(lambda completed: self._forget_background(task_id, completed))
+
+    def _ensure_accepting_tasks(self) -> None:
+        with self._lifecycle_lock:
+            if self._lifecycle_state != "RUNNING":
+                raise AppError("task service is shutting down")
 
     def _forget_background(self, task_id: UUID, future: Future[None]) -> None:
         with self._background_lock:
