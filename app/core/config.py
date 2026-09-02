@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     storage_root: Path = Path("data/workspaces")
+    task_database_path: Path | None = None
     default_task_timeout_seconds: int = 300
     max_log_lines_per_task: int = 2000
     allowed_cors_origins: list[str] = Field(
@@ -29,6 +31,12 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @model_validator(mode="after")
+    def set_default_task_database_path(self) -> Self:
+        if self.task_database_path is None:
+            self.task_database_path = self.storage_root.parent / "tasks.sqlite3"
+        return self
 
 
 @lru_cache

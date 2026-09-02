@@ -31,7 +31,7 @@ def get_workspace_service() -> WorkspaceService:
 
 @lru_cache
 def get_task_store() -> TaskStore:
-    return TaskStore()
+    return TaskStore(database_path=get_settings().task_database_path)
 
 
 @lru_cache
@@ -74,6 +74,13 @@ def get_task_service() -> TaskService:
 
 def clear_task_service_cache() -> None:
     get_task_service.cache_clear()
+
+
+def clear_task_store_cache(*, close: bool = True) -> None:
+    if close and get_task_store.cache_info().currsize:
+        get_task_store().close()
+    get_task_store.cache_clear()
+    get_debug_service.cache_clear()
 
 
 @lru_cache

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core.errors import AppError
 from app.platform.api.deps import (
     clear_task_service_cache,
+    clear_task_store_cache,
     get_log_service,
     get_settings,
     get_task_service,
@@ -19,15 +20,21 @@ from app.platform.services.task_service import TaskService
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    task_service: TaskService | None = None
     try:
-        task_service: TaskService = get_task_service()
+        task_service = get_task_service()
         await task_service.startup()
-        try:
-            yield
-        finally:
-            await task_service.shutdown()
+        yield
     finally:
-        clear_task_service_cache()
+        try:
+            if task_service is not None:
+                try:
+                    await task_service.shutdown()
+                finally:
+                    task_service.close_store_when_idle()
+        finally:
+            clear_task_store_cache(close=False)
+            clear_task_service_cache()
 
 
 def create_app() -> FastAPI:

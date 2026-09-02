@@ -92,6 +92,9 @@ async def test_fastapi_lifespan_owns_task_service(monkeypatch) -> None:
         async def shutdown(self) -> None:
             events.append("shutdown")
 
+        def close_store_when_idle(self) -> None:
+            pass
+
     monkeypatch.setattr("app.main.get_task_service", lambda: FakeTaskService())
 
     async with lifespan(FastAPI()):
@@ -132,5 +135,6 @@ async def test_lifespan_startup_failure_clears_task_service_cache(monkeypatch) -
 
         assert get_task_service.cache_info().currsize == 0
     finally:
-        await service.shutdown(grace_seconds=0)
+        if not service.task_store._closed:
+            await service.shutdown(grace_seconds=0)
         clear_task_service_cache()

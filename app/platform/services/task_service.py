@@ -162,6 +162,7 @@ class TaskService:
         with self._lifecycle_lock:
             if self._lifecycle_state != "RUNNING":
                 raise AppError("task service is not accepting tasks")
+            self.task_store.recover_interrupted_tasks()
 
     async def shutdown(self, grace_seconds: float = 5.0) -> None:
         with self._lifecycle_lock:
@@ -191,6 +192,23 @@ class TaskService:
         with self._lifecycle_lock:
             self._background_executor.shutdown(wait=False, cancel_futures=True)
             self._lifecycle_state = "CLOSED"
+
+    def close_store_when_idle(self) -> None:
+        """Close the store immediately or after timed-out workers finish."""
+        with self._background_lock:
+            futures = list(self._background_futures.values())
+        if not futures:
+            self.task_store.close()
+            return
+
+        def close_when_done(_: Future[None]) -> None:
+            with self._background_lock:
+                if any(not future.done() for future in futures):
+                    return
+            self.task_store.close()
+
+        for future in futures:
+            future.add_done_callback(close_when_done)
 
     async def cancel_task(self, task_id: UUID) -> TaskRecord:
         task = self.task_store.request_cancel(task_id)

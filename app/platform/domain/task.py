@@ -23,4 +23,5 @@ class TaskRecord:
     error: str | None = None
     metadata: dict = field(default_factory=dict)
     cancel_requested: bool = False
+    revision: int = 0
 
