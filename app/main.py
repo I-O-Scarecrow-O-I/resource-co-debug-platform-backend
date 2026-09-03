@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.errors import AppError
 from app.platform.api.deps import (
+    clear_log_service_cache,
     clear_task_service_cache,
     clear_task_store_cache,
     get_log_service,
@@ -31,9 +32,10 @@ async def lifespan(_: FastAPI):
                 try:
                     await task_service.shutdown()
                 finally:
-                    task_service.close_store_when_idle()
+                    task_service.close_resources_when_idle()
         finally:
             clear_task_store_cache(close=False)
+            clear_log_service_cache(close=False)
             clear_task_service_cache()
 
 

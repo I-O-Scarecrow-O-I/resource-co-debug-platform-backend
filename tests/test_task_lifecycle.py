@@ -7,7 +7,12 @@ from fastapi import FastAPI
 from app.core.errors import AppError
 from app.core.time import utc_now
 from app.main import lifespan
-from app.platform.api.deps import clear_task_service_cache, get_task_service
+from app.platform.api.deps import (
+    clear_log_service_cache,
+    clear_task_service_cache,
+    clear_task_store_cache,
+    get_task_service,
+)
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
 from app.platform.schemas.tasks import BuildTaskRequest
@@ -92,7 +97,7 @@ async def test_fastapi_lifespan_owns_task_service(monkeypatch) -> None:
         async def shutdown(self) -> None:
             events.append("shutdown")
 
-        def close_store_when_idle(self) -> None:
+        def close_resources_when_idle(self) -> None:
             pass
 
     monkeypatch.setattr("app.main.get_task_service", lambda: FakeTaskService())
@@ -106,17 +111,48 @@ async def test_fastapi_lifespan_owns_task_service(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_lifespan_recreates_cached_task_service_after_shutdown() -> None:
     clear_task_service_cache()
+    clear_log_service_cache()
     try:
         async with lifespan(FastAPI()):
             first_service = get_task_service()
 
         async with lifespan(FastAPI()):
             second_service = get_task_service()
+            assert second_service is not first_service
+            assert second_service.log_service is not first_service.log_service
+            assert not second_service.log_service._closed
+            assert second_service.scheduler_service.log_service is second_service.log_service
+            assert (
+                second_service.schedule_comparison_service.scheduler_service.log_service
+                is second_service.log_service
+            )
 
         assert first_service._lifecycle_state == "CLOSED"
-        assert second_service is not first_service
+        assert second_service.log_service._closed
     finally:
         clear_task_service_cache()
+        clear_log_service_cache()
+
+
+def test_clearing_log_cache_recreates_dependent_task_service() -> None:
+    clear_task_service_cache()
+    clear_log_service_cache()
+    clear_task_store_cache()
+    try:
+        first_service = get_task_service()
+
+        clear_log_service_cache()
+
+        second_service = get_task_service()
+        assert second_service is not first_service
+        assert second_service.log_service is not first_service.log_service
+        assert not second_service.log_service._closed
+        event = second_service.log_service.append(uuid4(), "log service is available")
+        assert event.message == "log service is available"
+    finally:
+        clear_task_service_cache()
+        clear_log_service_cache()
+        clear_task_store_cache()
 
 
 @pytest.mark.asyncio

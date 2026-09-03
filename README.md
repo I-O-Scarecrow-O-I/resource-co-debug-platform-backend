@@ -7,8 +7,8 @@ FastAPI main backend foundation for the code generation and cross-platform debug
 - Main backend language: Python 3.11.x
 - Web/API framework: FastAPI
 - Runtime server: Uvicorn
-- First-stage persistence: in-memory repositories and local workspaces
-- Planned persistence: PostgreSQL after the API model stabilizes
+- Persistence: projects and workspaces use the local filesystem; task records and bounded log history use SQLite
+- Scale-out evolution: PostgreSQL and pub/sub are optional when multi-worker or multi-node deployment is needed
 - External execution: Make/GCC/GDB are launched by module A as controlled subprocesses
 - Module integration: contract backend modules are registered under `/api/v1/modules/...`
 - Algorithm invocation: the platform calls `co_debug.scheduler` as ordinary Python functions
@@ -44,6 +44,12 @@ O:\Code\resource-co-debug-platform-backend\scripts\run-dev.ps1
 Default URL: `http://localhost:8000`
 
 The reusable local environment is documented in `docs/environment.md`.
+
+## Log Streaming Deployment Constraint
+
+SQLite-backed log history can be read across instances, but WebSocket real-time fan-out is
+process-local. Run the current baseline with a single worker; multi-worker or multi-node
+deployments require a pub/sub backend.
 
 ## Key APIs
 

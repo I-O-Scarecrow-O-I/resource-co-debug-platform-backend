@@ -21,7 +21,11 @@ def get_settings() -> Settings:
 
 @lru_cache
 def get_log_service() -> TaskLogService:
-    return TaskLogService(max_lines=get_settings().max_log_lines_per_task)
+    settings = get_settings()
+    return TaskLogService(
+        max_lines=settings.max_log_lines_per_task,
+        database_path=settings.task_database_path,
+    )
 
 
 @lru_cache
@@ -74,6 +78,15 @@ def get_task_service() -> TaskService:
 
 def clear_task_service_cache() -> None:
     get_task_service.cache_clear()
+
+
+def clear_log_service_cache(*, close: bool = True) -> None:
+    get_task_service.cache_clear()
+    get_schedule_comparison_service.cache_clear()
+    get_scheduler_service.cache_clear()
+    if close and get_log_service.cache_info().currsize:
+        get_log_service().close()
+    get_log_service.cache_clear()
 
 
 def clear_task_store_cache(*, close: bool = True) -> None:
