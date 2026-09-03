@@ -1,4 +1,6 @@
+import json
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import copyfileobj, copytree, rmtree
 from uuid import UUID, uuid4
@@ -13,11 +15,15 @@ from app.platform.domain.project import ProjectWorkspace
 
 
 class WorkspaceService:
+    _MANIFEST_FILENAME = ".project.json"
+    _MANIFEST_VERSION = 1
+
     def __init__(self, storage_root: Path) -> None:
-        self.storage_root = storage_root
+        self.storage_root = storage_root.resolve()
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self._projects: dict[UUID, ProjectWorkspace] = {}
         self._lock = threading.RLock()
+        self._load_projects()
 
     async def create_from_archive(
         self,
@@ -51,6 +57,14 @@ class WorkspaceService:
             status=ProjectStatus.READY,
             created_at=utc_now(),
         )
+        try:
+            self._write_manifest(workspace)
+        except OSError:
+            try:
+                rmtree(project_root)
+            except OSError:
+                pass
+            raise
         with self._lock:
             self._projects[project_id] = workspace
         return workspace
@@ -122,6 +136,94 @@ class WorkspaceService:
             raise AppError("invalid task workspace")
         if task_root.exists():
             rmtree(task_root)
+
+    def _load_projects(self) -> None:
+        for project_dir in self.storage_root.iterdir():
+            try:
+                if not project_dir.is_dir() or project_dir.is_symlink():
+                    continue
+                workspace = self._load_workspace(project_dir)
+                if workspace is not None:
+                    self._projects[workspace.id] = workspace
+            except (OSError, RuntimeError):
+                continue
+
+    def _load_workspace(self, project_dir: Path) -> ProjectWorkspace | None:
+        try:
+            project_root = project_dir.resolve()
+            if project_root.parent != self.storage_root:
+                return None
+            manifest = json.loads(
+                (project_root / self._MANIFEST_FILENAME).read_text(encoding="utf-8")
+            )
+            if (
+                not isinstance(manifest, dict)
+                or type(manifest.get("version")) is not int
+                or manifest["version"] != self._MANIFEST_VERSION
+                or not isinstance(manifest.get("id"), str)
+                or not isinstance(manifest.get("name"), str)
+                or not isinstance(manifest.get("status"), str)
+                or not isinstance(manifest.get("created_at"), str)
+            ):
+                return None
+
+            project_id = UUID(manifest["id"])
+            if project_root.name != str(project_id):
+                return None
+            status = ProjectStatus(manifest["status"])
+            if status is not ProjectStatus.READY:
+                return None
+            created_at = datetime.fromisoformat(manifest["created_at"])
+            if created_at.tzinfo is None or created_at.utcoffset() != timedelta(0):
+                return None
+
+            source_dir = project_root / "source"
+            if source_dir.is_symlink():
+                return None
+            source_path = source_dir.resolve()
+            if (
+                not source_path.is_relative_to(project_root)
+                or not source_path.is_relative_to(self.storage_root)
+                or not source_path.is_dir()
+            ):
+                return None
+            for entry in source_path.rglob("*"):
+                if entry.is_symlink() or not entry.resolve().is_relative_to(source_path):
+                    return None
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return None
+
+        return ProjectWorkspace(
+            id=project_id,
+            name=manifest["name"],
+            root_path=project_root,
+            source_path=source_path,
+            status=status,
+            created_at=created_at,
+        )
+
+    def _write_manifest(self, workspace: ProjectWorkspace) -> None:
+        manifest_path = workspace.root_path / self._MANIFEST_FILENAME
+        temporary_path = manifest_path.with_name(f".{manifest_path.name}.{uuid4().hex}.tmp")
+        manifest = {
+            "version": self._MANIFEST_VERSION,
+            "id": str(workspace.id),
+            "name": workspace.name,
+            "status": workspace.status.value,
+            "created_at": workspace.created_at.isoformat(),
+        }
+        try:
+            temporary_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            temporary_path.replace(manifest_path)
+        except OSError:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+            raise
 
     def _extract_zip_safely(self, archive_path: Path, source_dir: Path) -> None:
         source_root = source_dir.resolve()
