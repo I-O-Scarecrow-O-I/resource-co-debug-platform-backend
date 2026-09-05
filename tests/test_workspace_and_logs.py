@@ -1,19 +1,24 @@
 import asyncio
 import io
 import json
+import stat
 import sys
 import time
 from datetime import timedelta
 from uuid import uuid4
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 import pytest
 from fastapi import UploadFile, WebSocketDisconnect
+from fastapi.testclient import TestClient
 
+from app.core.errors import AppError, NotFoundError
 from app.core.time import utc_now
+from app.main import create_app
+from app.platform.api.deps import get_workspace_service
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
-from app.platform.services.log_service import TaskLogService
+from app.platform.services.log_service import LogStreamOverflow, TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
@@ -182,6 +187,186 @@ async def test_manifest_write_failure_removes_new_project_directory(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_invalid_archive_is_rejected_and_removes_project_directory(tmp_path) -> None:
+    service = WorkspaceService(tmp_path)
+
+    with pytest.raises(AppError, match="invalid zip archive"):
+        await service.create_from_archive(
+            UploadFile(file=io.BytesIO(b"not a zip"), filename="bad.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_unsafe_archive_entry_removes_project_directory(tmp_path) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("../outside.txt", "unsafe")
+    archive.seek(0)
+    service = WorkspaceService(tmp_path)
+
+    with pytest.raises(AppError, match="unsafe zip entry"):
+        await service.create_from_archive(UploadFile(file=archive, filename="unsafe.zip"))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_archive_resource_limits_are_rejected_without_orphans(tmp_path, monkeypatch) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("first.txt", "one")
+        zip_file.writestr("second.txt", "two")
+    archive.seek(0)
+    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_MEMBERS", 1)
+
+    with pytest.raises(AppError, match="too many entries"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="limited.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_archive_size_limit_is_rejected_without_orphans(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(WorkspaceService, "MAX_ARCHIVE_BYTES", 3, raising=False)
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("source.txt", "source")
+    archive.seek(0)
+
+    with pytest.raises(AppError, match="zip archive exceeds compressed size limit"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="limited.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_project_upload_rejects_excessive_content_length(monkeypatch) -> None:
+    monkeypatch.setattr(WorkspaceService, "MAX_PROJECT_UPLOAD_BODY_BYTES", 10, raising=False)
+    client = TestClient(create_app())
+
+    try:
+        response = client.post("/api/v1/projects", headers={"content-length": "11"})
+    finally:
+        client.close()
+
+    assert response.status_code == 413
+    assert response.json()["success"] is False
+    assert response.json()["message"] == "project upload exceeds size limit"
+
+
+@pytest.mark.asyncio
+async def test_project_upload_rejects_chunked_body_exceeding_limit(monkeypatch) -> None:
+    first_chunk = (
+        b"--test\r\n"
+        b'Content-Disposition: form-data; name="archive"; filename="project.zip"\r\n'
+        b"Content-Type: application/zip\r\n\r\n"
+    )
+    monkeypatch.setattr(
+        WorkspaceService,
+        "MAX_PROJECT_UPLOAD_BODY_BYTES",
+        len(first_chunk),
+        raising=False,
+    )
+    messages = iter(
+        [
+            {"type": "http.request", "body": first_chunk, "more_body": True},
+            {"type": "http.request", "body": b"1", "more_body": False},
+        ]
+    )
+    sent = []
+
+    async def receive():
+        return next(messages, {"type": "http.disconnect"})
+
+    async def send(message):
+        sent.append(message)
+
+    await create_app()(  # type: ignore[operator]
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/v1/projects",
+            "raw_path": b"/api/v1/projects",
+            "query_string": b"",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=test")],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        },
+        receive,
+        send,
+    )
+
+    assert sent[0]["status"] == 413
+    payload = json.loads(sent[1]["body"])
+    assert payload["success"] is False
+    assert payload["message"] == "project upload exceeds size limit"
+
+
+@pytest.mark.asyncio
+async def test_archive_allows_explicit_directory_and_permission_only_regular_file(tmp_path) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        directory = ZipInfo("nested/")
+        directory.external_attr = (stat.S_IFDIR | 0o755) << 16
+        zip_file.writestr(directory, "")
+        member = ZipInfo("nested/source.c")
+        member.external_attr = 0o600 << 16
+        zip_file.writestr(member, "int main(void) { return 0; }")
+    archive.seek(0)
+
+    project = await WorkspaceService(tmp_path).create_from_archive(
+        UploadFile(file=archive, filename="project.zip")
+    )
+
+    assert (project.source_path / "nested" / "source.c").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry_type", [stat.S_IFLNK, stat.S_IFCHR, stat.S_IFBLK])
+async def test_archive_rejects_special_entry_disguised_as_directory(tmp_path, entry_type) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        member = ZipInfo("unsafe/")
+        member.external_attr = (entry_type | 0o777) << 16
+        zip_file.writestr(member, "")
+    archive.seek(0)
+
+    with pytest.raises(AppError, match="unsupported zip entry"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="unsafe.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_archive_api_response_has_no_orphan_directory(tmp_path) -> None:
+    workspace_service = WorkspaceService(tmp_path)
+    app = create_app()
+    app.dependency_overrides[get_workspace_service] = lambda: workspace_service
+    client = TestClient(app)
+
+    try:
+        response = client.post(
+            "/api/v1/projects",
+            files={"archive": ("bad.zip", b"not a zip", "application/zip")},
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 400
+    assert response.json()["message"] == "invalid zip archive"
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_log_events_can_be_appended_from_another_thread() -> None:
     service = TaskLogService(max_lines=10)
     task_id = uuid4()
@@ -191,6 +376,23 @@ async def test_log_events_can_be_appended_from_another_thread() -> None:
     event = await asyncio.wait_for(queue.get(), timeout=1)
 
     assert event.message == "worker event"
+    service.unsubscribe(task_id, queue)
+
+
+@pytest.mark.asyncio
+async def test_slow_log_subscriber_keeps_latest_events_with_bounded_queue() -> None:
+    service = TaskLogService(max_lines=2)
+    task_id = uuid4()
+    queue = service.subscribe(task_id)
+
+    await asyncio.to_thread(
+        lambda: [service.append(task_id, f"event-{index}") for index in range(5)]
+    )
+    await asyncio.sleep(0)
+
+    assert queue.maxsize == 2
+    assert isinstance(queue.get_nowait(), LogStreamOverflow)
+    assert [event.message for event in service.history(task_id)] == ["event-3", "event-4"]
     service.unsubscribe(task_id, queue)
 
 
@@ -240,6 +442,11 @@ async def test_log_history_to_realtime_switch_has_no_gaps_or_duplicates(monkeypa
         if getattr(route, "path", None) == "/ws/v1/tasks/{task_id}/logs"
     )
     monkeypatch.setattr(main, "get_log_service", lambda: service)
+    monkeypatch.setattr(
+        main,
+        "get_task_service",
+        lambda: type("TaskService", (), {"require_task": lambda _, value: value})(),
+    )
 
     await asyncio.wait_for(endpoint(websocket, str(task_id)), timeout=1)
 
@@ -268,11 +475,58 @@ async def test_log_history_send_failure_unsubscribes(monkeypatch) -> None:
         if getattr(route, "path", None) == "/ws/v1/tasks/{task_id}/logs"
     )
     monkeypatch.setattr(main, "get_log_service", lambda: service)
+    monkeypatch.setattr(
+        main,
+        "get_task_service",
+        lambda: type("TaskService", (), {"require_task": lambda _, value: value})(),
+    )
 
     with pytest.raises(RuntimeError, match="connection failed"):
         await endpoint(FailingWebSocket(), str(task_id))
 
     assert not service._subscribers[str(task_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_id", ["not-a-uuid", str(uuid4())])
+async def test_log_websocket_rejects_invalid_or_missing_task(monkeypatch, task_id) -> None:
+    import app.main as main
+
+    service = TaskLogService(max_lines=20)
+
+    class RejectingWebSocket:
+        def __init__(self) -> None:
+            self.accepted = False
+            self.close_code = None
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def close(self, code: int) -> None:
+            self.close_code = code
+
+    endpoint = next(
+        route.endpoint
+        for route in main.app.routes
+        if getattr(route, "path", None) == "/ws/v1/tasks/{task_id}/logs"
+    )
+    monkeypatch.setattr(main, "get_log_service", lambda: service)
+    monkeypatch.setattr(
+        main,
+        "get_task_service",
+        lambda: type(
+            "TaskService",
+            (),
+            {"require_task": lambda _, value: (_ for _ in ()).throw(NotFoundError(str(value)))},
+        )(),
+    )
+    websocket = RejectingWebSocket()
+
+    await endpoint(websocket, task_id)
+
+    assert not websocket.accepted
+    assert websocket.close_code == 1008
+    assert not service._subscribers
 
 
 def test_cancelled_pending_task_cannot_start() -> None:

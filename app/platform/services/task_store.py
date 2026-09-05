@@ -185,31 +185,126 @@ class TaskStore:
             return sorted(self._tasks.values(), key=lambda item: item.created_at, reverse=True)
 
     def request_cancel(self, task_id: UUID) -> TaskRecord:
+        task, _ = self.request_cancel_with_transition(task_id)
+        return task
+
+    def request_cancel_with_transition(self, task_id: UUID) -> tuple[TaskRecord, bool]:
         with self._lock, self._connection:
             self._ensure_open()
-            current = self._load(task_id)
-            if current is None:
-                raise NotFoundError(f"task not found: {task_id}")
-            self._connection.execute(
+            cursor = self._connection.execute(
                 """
                 UPDATE tasks
                 SET cancel_requested = 1,
                     status = CASE WHEN status = ? THEN ? ELSE status END,
+                    finished_at = CASE WHEN status = ? THEN ? ELSE finished_at END,
+                    error = CASE WHEN status = ? THEN ? ELSE error END,
                     revision = revision + 1
-                WHERE id = ? AND status IN (?, ?)
+                WHERE id = ? AND status IN (?, ?) AND cancel_requested = 0
                 """,
                 (
                     TaskStatus.PENDING.value,
                     TaskStatus.CANCELLED.value,
+                    TaskStatus.PENDING.value,
+                    self._datetime(utc_now()),
+                    TaskStatus.PENDING.value,
+                    "cancelled",
                     str(task_id),
                     TaskStatus.PENDING.value,
                     TaskStatus.RUNNING.value,
                 ),
             )
             latest = self._load(task_id)
-            assert latest is not None
+            if latest is None:
+                raise NotFoundError(f"task not found: {task_id}")
+            self._tasks[task_id] = latest
+            return latest, cursor.rowcount == 1
+
+    def update_progress(self, task_id: UUID, progress: int) -> TaskRecord:
+        if not 0 <= progress <= 100:
+            raise ValueError("progress must be between 0 and 100")
+
+        with self._lock, self._connection:
+            self._ensure_open()
+            self._connection.execute(
+                """
+                UPDATE tasks
+                SET progress = ?, revision = revision + 1
+                WHERE id = ?
+                  AND status = ?
+                  AND cancel_requested = 0
+                  AND progress <= ?
+                """,
+                (progress, str(task_id), TaskStatus.RUNNING.value, progress),
+            )
+            latest = self._load(task_id)
+            if latest is None:
+                raise NotFoundError(f"task not found: {task_id}")
             self._tasks[task_id] = latest
             return latest
+
+    def finalize(self, task: TaskRecord) -> TaskRecord:
+        finalized, _ = self.finalize_with_transition(task)
+        return finalized
+
+    def finalize_with_transition(self, task: TaskRecord) -> tuple[TaskRecord, bool]:
+        if task.status not in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
+            raise ValueError("task must be finalized with a terminal status")
+
+        finished_at = self._datetime(task.finished_at or utc_now())
+        is_cancelled = task.status == TaskStatus.CANCELLED
+        with self._lock, self._connection:
+            self._ensure_open()
+            cursor = self._connection.execute(
+                """
+                UPDATE tasks
+                SET status = CASE WHEN cancel_requested = 1 OR ? THEN ? ELSE ? END,
+                    finished_at = ?,
+                    exit_code = CASE
+                        WHEN cancel_requested = 1 OR ? THEN exit_code ELSE ?
+                    END,
+                    elapsed_ms = CASE
+                        WHEN cancel_requested = 1 OR ? THEN elapsed_ms ELSE ?
+                    END,
+                    progress = CASE
+                        WHEN cancel_requested = 1 OR ? THEN progress ELSE MAX(progress, ?)
+                    END,
+                    result_json = CASE
+                        WHEN cancel_requested = 1 OR ? THEN result_json ELSE ?
+                    END,
+                    error = CASE
+                        WHEN cancel_requested = 1 OR ? THEN 'cancelled' ELSE ?
+                    END,
+                    revision = revision + 1
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    is_cancelled,
+                    TaskStatus.CANCELLED.value,
+                    task.status.value,
+                    finished_at,
+                    is_cancelled,
+                    task.exit_code,
+                    is_cancelled,
+                    task.elapsed_ms,
+                    is_cancelled,
+                    task.progress,
+                    is_cancelled,
+                    self._json(task.result),
+                    is_cancelled,
+                    task.error,
+                    str(task.id),
+                    TaskStatus.RUNNING.value,
+                ),
+            )
+            latest = self._load(task.id)
+            if latest is None:
+                raise NotFoundError(f"task not found: {task.id}")
+            self._tasks[task.id] = latest
+            return latest, cursor.rowcount == 1
 
     def try_start(self, task_id: UUID) -> TaskRecord | None:
         """Atomically move a task from PENDING to RUNNING."""
@@ -226,7 +321,7 @@ class TaskStore:
                 """
                 UPDATE tasks
                 SET status = ?, started_at = ?, revision = revision + 1
-                WHERE id = ? AND status = ?
+                WHERE id = ? AND status = ? AND cancel_requested = 0
                 """,
                 (
                     TaskStatus.RUNNING.value,
@@ -243,30 +338,53 @@ class TaskStore:
             return latest
 
     def recover_interrupted_tasks(self) -> list[TaskRecord]:
-        """Mark tasks left active by a previous process as failed."""
-        with self._lock, self._connection:
+        """Atomically terminalize tasks left active by a previous process."""
+        with self._lock:
             self._ensure_open()
-            interrupted: list[TaskRecord] = []
-            finished_at = utc_now()
-            for task_id in list(self._tasks):
-                task = self._load(task_id)
-                if task is None or task.status not in {TaskStatus.PENDING, TaskStatus.RUNNING}:
-                    if task is not None:
-                        self._tasks[task_id] = task
-                    continue
-                task.status = TaskStatus.FAILED
-                task.error = "interrupted by process restart"
-                task.finished_at = finished_at
-                cursor = self._upsert(task)
-                if cursor.rowcount == 1:
-                    task.revision += 1
-                    self._tasks[task_id] = task
-                    interrupted.append(task)
+            try:
+                self._connection.execute("BEGIN IMMEDIATE")
+                rows = self._connection.execute(
+                    "SELECT id FROM tasks WHERE status IN (?, ?)",
+                    (TaskStatus.PENDING.value, TaskStatus.RUNNING.value),
+                ).fetchall()
+                task_ids = [row["id"] for row in rows]
+                if task_ids:
+                    self._connection.execute(
+                        """
+                        UPDATE tasks
+                        SET status = CASE WHEN cancel_requested = 1 THEN ? ELSE ? END,
+                            error = CASE
+                                WHEN cancel_requested = 1 THEN ? ELSE ?
+                            END,
+                            finished_at = ?,
+                            revision = revision + 1
+                        WHERE status IN (?, ?)
+                        """,
+                        (
+                            TaskStatus.CANCELLED.value,
+                            TaskStatus.FAILED.value,
+                            "cancelled",
+                            "interrupted by process restart",
+                            self._datetime(utc_now()),
+                            TaskStatus.PENDING.value,
+                            TaskStatus.RUNNING.value,
+                        ),
+                    )
+                    recovered_rows = [
+                        self._connection.execute(
+                            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+                        ).fetchone()
+                        for task_id in task_ids
+                    ]
                 else:
-                    latest = self._load(task_id)
-                    if latest is not None:
-                        self._tasks[task_id] = latest
-            return interrupted
+                    recovered_rows = []
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
+            recovered = [self._deserialize(row) for row in recovered_rows]
+            self._tasks.update({task.id: task for task in recovered})
+            return recovered
 
     def close(self) -> None:
         with self._lock:

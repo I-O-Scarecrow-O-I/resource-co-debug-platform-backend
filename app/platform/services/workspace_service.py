@@ -1,12 +1,13 @@
 import json
+import logging
 import os
 import stat
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
-from shutil import copyfileobj, copytree, rmtree
+from shutil import copytree, rmtree
 from uuid import UUID, uuid4
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import UploadFile
 
@@ -15,10 +16,20 @@ from app.core.time import utc_now
 from app.platform.domain.enums import ProjectStatus
 from app.platform.domain.project import ProjectWorkspace
 
+logger = logging.getLogger(__name__)
+
 
 class WorkspaceService:
     _MANIFEST_FILENAME = ".project.json"
     _MANIFEST_VERSION = 1
+    MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+    MULTIPART_OVERHEAD_BYTES = 1 * 1024 * 1024
+    MAX_PROJECT_UPLOAD_BODY_BYTES = MAX_ARCHIVE_BYTES + MULTIPART_OVERHEAD_BYTES
+    _MAX_ZIP_MEMBERS = 1_000
+    _MAX_ZIP_FILE_BYTES = 10 * 1024 * 1024
+    _MAX_ZIP_TOTAL_BYTES = 50 * 1024 * 1024
+    _MAX_ZIP_COMPRESSION_RATIO = 100
+    _ZIP_CHUNK_BYTES = 64 * 1024
 
     def __init__(self, storage_root: Path) -> None:
         self.storage_root = storage_root.resolve()
@@ -41,31 +52,31 @@ class WorkspaceService:
         project_root = (self.storage_root / str(project_id)).resolve()
         upload_dir = project_root / "upload"
         source_dir = project_root / "source"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        source_dir.mkdir(parents=True, exist_ok=True)
-
-        archive_name = self._safe_filename(archive.filename)
-        archive_path = upload_dir / archive_name
-        with archive_path.open("wb") as target:
-            copyfileobj(archive.file, target)
-
-        self._extract_zip_safely(archive_path, source_dir)
-
-        workspace = ProjectWorkspace(
-            id=project_id,
-            name=display_name or archive_name.removesuffix(".zip"),
-            root_path=project_root,
-            source_path=source_dir,
-            status=ProjectStatus.READY,
-            created_at=utc_now(),
-        )
         try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            source_dir.mkdir(parents=True, exist_ok=True)
+
+            archive_name = self._safe_filename(archive.filename)
+            archive_path = upload_dir / archive_name
+            with archive_path.open("wb") as target:
+                self._copy_archive_limited(archive.file, target)
+
+            self._extract_zip_safely(archive_path, source_dir)
+
+            workspace = ProjectWorkspace(
+                id=project_id,
+                name=display_name or archive_name.removesuffix(".zip"),
+                root_path=project_root,
+                source_path=source_dir,
+                status=ProjectStatus.READY,
+                created_at=utc_now(),
+            )
             self._write_manifest(workspace)
-        except OSError:
-            try:
-                rmtree(project_root)
-            except OSError:
-                pass
+        except BadZipFile as exc:
+            self._cleanup_failed_project(project_root)
+            raise AppError("invalid zip archive") from exc
+        except Exception:
+            self._cleanup_failed_project(project_root)
             raise
         with self._lock:
             self._projects[project_id] = workspace
@@ -320,11 +331,66 @@ class WorkspaceService:
     def _extract_zip_safely(self, archive_path: Path, source_dir: Path) -> None:
         source_root = source_dir.resolve()
         with ZipFile(archive_path) as archive:
-            for member in archive.infolist():
+            members = archive.infolist()
+            if len(members) > self._MAX_ZIP_MEMBERS:
+                raise AppError("zip archive has too many entries")
+            declared_total = 0
+            for member in members:
                 target = (source_root / member.filename).resolve()
                 if not target.is_relative_to(source_root):
                     raise AppError(f"unsafe zip entry: {member.filename}")
-            archive.extractall(source_root)
+                mode = member.external_attr >> 16
+                entry_type = stat.S_IFMT(mode)
+                if member.is_dir():
+                    if entry_type not in {0, stat.S_IFDIR}:
+                        raise AppError(f"unsupported zip entry: {member.filename}")
+                    continue
+                if entry_type not in {0, stat.S_IFREG}:
+                    raise AppError(f"unsupported zip entry: {member.filename}")
+                if member.file_size > self._MAX_ZIP_FILE_BYTES:
+                    raise AppError(f"zip entry exceeds size limit: {member.filename}")
+                declared_total += member.file_size
+                if declared_total > self._MAX_ZIP_TOTAL_BYTES:
+                    raise AppError("zip archive exceeds total size limit")
+                if member.file_size and (
+                    member.compress_size == 0
+                    or member.file_size > member.compress_size * self._MAX_ZIP_COMPRESSION_RATIO
+                ):
+                    raise AppError(f"zip entry exceeds compression ratio limit: {member.filename}")
+
+            extracted_total = 0
+            for member in members:
+                target = (source_root / member.filename).resolve()
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                extracted_size = 0
+                with archive.open(member) as source, target.open("wb") as destination:
+                    while chunk := source.read(self._ZIP_CHUNK_BYTES):
+                        extracted_size += len(chunk)
+                        extracted_total += len(chunk)
+                        if (
+                            extracted_size > self._MAX_ZIP_FILE_BYTES
+                            or extracted_total > self._MAX_ZIP_TOTAL_BYTES
+                        ):
+                            raise AppError(f"zip entry exceeds size limit: {member.filename}")
+                        destination.write(chunk)
+
+    def _copy_archive_limited(self, source, destination) -> None:
+        copied_bytes = 0
+        while chunk := source.read(self._ZIP_CHUNK_BYTES):
+            copied_bytes += len(chunk)
+            if copied_bytes > self.MAX_ARCHIVE_BYTES:
+                raise AppError("zip archive exceeds compressed size limit")
+            destination.write(chunk)
+
+    @staticmethod
+    def _cleanup_failed_project(project_root: Path) -> None:
+        try:
+            rmtree(project_root)
+        except OSError as exc:
+            logger.warning("failed to remove project directory %s: %s", project_root, exc)
 
     def _safe_filename(self, filename: str) -> str:
         return "".join("_" if char in '\\/:*?"<>|' else char for char in filename)

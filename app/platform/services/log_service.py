@@ -1,7 +1,8 @@
 import asyncio
 import sqlite3
 import threading
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -11,9 +12,18 @@ from app.platform.schemas.common import LogEvent
 
 
 @dataclass(slots=True, frozen=True)
+class LogStreamOverflow:
+    pass
+
+
+@dataclass(slots=True, eq=False)
 class _LogSubscriber:
     loop: asyncio.AbstractEventLoop
-    queue: asyncio.Queue[LogEvent]
+    queue: asyncio.Queue[LogEvent | LogStreamOverflow]
+    staging: deque[LogEvent | LogStreamOverflow] = field(default_factory=deque)
+    drain_scheduled: bool = False
+    overflowed: bool = False
+    active: bool = True
 
 
 class TaskLogService:
@@ -123,48 +133,102 @@ class TaskLogService:
             stale_subscribers: list[_LogSubscriber] = []
             subscribers = list(self._subscribers.get(key, set()))
             for subscriber in subscribers:
-                try:
-                    subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, event)
-                except RuntimeError:
+                if not self._stage_event(subscriber, event):
                     stale_subscribers.append(subscriber)
             if stale_subscribers:
                 self._subscribers[key].difference_update(stale_subscribers)
         return event
+
+    def _stage_event(self, subscriber: _LogSubscriber, event: LogEvent) -> bool:
+        if subscriber.overflowed:
+            return True
+        if len(subscriber.staging) >= self.max_lines:
+            subscriber.staging.clear()
+            subscriber.staging.append(LogStreamOverflow())
+            subscriber.overflowed = True
+        else:
+            subscriber.staging.append(event)
+        if subscriber.drain_scheduled:
+            return True
+        subscriber.drain_scheduled = True
+        try:
+            subscriber.loop.call_soon_threadsafe(self._drain_subscriber, subscriber)
+        except RuntimeError:
+            subscriber.active = False
+            return False
+        return True
+
+    def _drain_subscriber(self, subscriber: _LogSubscriber) -> None:
+        with self._lock:
+            subscriber.drain_scheduled = False
+            if not subscriber.active:
+                subscriber.staging.clear()
+                return
+            while subscriber.staging:
+                item = subscriber.staging.popleft()
+                if isinstance(item, LogStreamOverflow) or subscriber.queue.full():
+                    while not subscriber.queue.empty():
+                        try:
+                            subscriber.queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    subscriber.queue.put_nowait(LogStreamOverflow())
+                    subscriber.staging.clear()
+                    subscriber.overflowed = True
+                    return
+                try:
+                    subscriber.queue.put_nowait(item)
+                except asyncio.QueueFull:
+                    subscriber.staging.clear()
+                    subscriber.queue.put_nowait(LogStreamOverflow())
+                    subscriber.overflowed = True
+                    return
 
     def history(self, task_id: UUID | str) -> list[LogEvent]:
         with self._lock:
             self._ensure_open()
             return self._history(str(task_id))
 
-    def subscribe(self, task_id: UUID | str) -> asyncio.Queue[LogEvent]:
+    def subscribe(self, task_id: UUID | str) -> asyncio.Queue[LogEvent | LogStreamOverflow]:
         with self._lock:
             self._ensure_open()
-            queue: asyncio.Queue[LogEvent] = asyncio.Queue()
+            queue: asyncio.Queue[LogEvent | LogStreamOverflow] = asyncio.Queue(
+                maxsize=self.max_lines
+            )
             subscriber = _LogSubscriber(loop=asyncio.get_running_loop(), queue=queue)
             self._subscribers.setdefault(str(task_id), set()).add(subscriber)
         return queue
 
     def subscribe_with_history(
         self, task_id: UUID | str
-    ) -> tuple[list[LogEvent], asyncio.Queue[LogEvent], int]:
+    ) -> tuple[list[LogEvent], asyncio.Queue[LogEvent | LogStreamOverflow], int]:
         key = str(task_id)
         with self._lock:
             self._ensure_open()
-            queue: asyncio.Queue[LogEvent] = asyncio.Queue()
+            queue: asyncio.Queue[LogEvent | LogStreamOverflow] = asyncio.Queue(
+                maxsize=self.max_lines
+            )
             subscriber = _LogSubscriber(loop=asyncio.get_running_loop(), queue=queue)
             history = self._history(key)
             self._subscribers.setdefault(key, set()).add(subscriber)
             cutover_sequence = history[-1].sequence if history else 0
         return history, queue, cutover_sequence
 
-    def unsubscribe(self, task_id: UUID | str, queue: asyncio.Queue[LogEvent]) -> None:
+    def unsubscribe(
+        self,
+        task_id: UUID | str,
+        queue: asyncio.Queue[LogEvent | LogStreamOverflow],
+    ) -> None:
         key = str(task_id)
         with self._lock:
             self._ensure_open()
+            subscribers = self._subscribers.get(key, set())
+            for subscriber in subscribers:
+                if subscriber.queue is queue:
+                    subscriber.active = False
+                    subscriber.staging.clear()
             self._subscribers[key] = {
-                subscriber
-                for subscriber in self._subscribers.get(key, set())
-                if subscriber.queue is not queue
+                subscriber for subscriber in subscribers if subscriber.queue is not queue
             }
 
     def close(self) -> None:

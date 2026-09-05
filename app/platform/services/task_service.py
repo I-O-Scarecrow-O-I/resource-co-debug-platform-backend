@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -23,6 +24,8 @@ from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
+
+logger = logging.getLogger(__name__)
 
 
 class TaskService:
@@ -175,7 +178,22 @@ class TaskService:
         with self._lifecycle_lock:
             if self._lifecycle_state != "RUNNING":
                 raise AppError("task service is not accepting tasks")
-            self.task_store.recover_interrupted_tasks()
+            recovered = self.task_store.recover_interrupted_tasks()
+        for task in recovered:
+            try:
+                self._log_final_state(task)
+            except Exception:
+                logger.warning("failed to log recovered task %s", task.id, exc_info=True)
+            if self.workspace_service is None:
+                continue
+            try:
+                self.workspace_service.cleanup_task_workspaces(task.project_id, task.id)
+            except Exception:
+                logger.warning(
+                    "failed to clean recovered task workspace %s",
+                    task.id,
+                    exc_info=True,
+                )
 
     async def shutdown(self, grace_seconds: float = 5.0) -> None:
         with self._lifecycle_lock:
@@ -183,28 +201,38 @@ class TaskService:
                 return
             self._lifecycle_state = "CLOSING"
 
-        for task in self.task_store.list():
-            if task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
-                self.task_store.request_cancel(task.id)
+        try:
+            for task in self.task_store.list():
+                if task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+                    try:
+                        await self.cancel_task(task.id)
+                    except Exception:
+                        logger.warning(
+                            "failed to cancel task during shutdown: %s",
+                            task.id,
+                            exc_info=True,
+                        )
 
-        with self._background_lock:
-            futures = list(self._background_futures.values())
-        for future in futures:
-            future.cancel()
-
-        deadline = asyncio.get_running_loop().time() + max(grace_seconds, 0)
-        while True:
             with self._background_lock:
-                active_futures = [
-                    future for future in self._background_futures.values() if not future.done()
-                ]
-            if not active_futures or asyncio.get_running_loop().time() >= deadline:
-                break
-            await asyncio.sleep(0.05)
+                futures = list(self._background_futures.values())
+            for future in futures:
+                future.cancel()
 
-        with self._lifecycle_lock:
-            self._background_executor.shutdown(wait=False, cancel_futures=True)
-            self._lifecycle_state = "CLOSED"
+            deadline = asyncio.get_running_loop().time() + max(grace_seconds, 0)
+            while True:
+                with self._background_lock:
+                    active_futures = [
+                        future for future in self._background_futures.values() if not future.done()
+                    ]
+                if not active_futures or asyncio.get_running_loop().time() >= deadline:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            try:
+                self._background_executor.shutdown(wait=False, cancel_futures=True)
+            finally:
+                with self._lifecycle_lock:
+                    self._lifecycle_state = "CLOSED"
 
     def close_resources_when_idle(self) -> None:
         """Close persistent resources immediately or after timed-out workers finish."""
@@ -225,14 +253,26 @@ class TaskService:
         for future in futures:
             future.add_done_callback(close_when_done)
 
+    def can_close_resources(self) -> bool:
+        with self._lifecycle_lock, self._background_lock:
+            return self._lifecycle_state == "CLOSED" and all(
+                future.done() for future in self._background_futures.values()
+            )
+
     async def cancel_task(self, task_id: UUID) -> TaskRecord:
-        task = self.task_store.request_cancel(task_id)
+        task, changed = self.task_store.request_cancel_with_transition(task_id)
         with self._background_lock:
             future = self._background_futures.get(task_id)
         if task.status == TaskStatus.CANCELLED and future is not None:
             future.cancel()
-        if task.status == TaskStatus.RUNNING:
-            self.log_service.append(task_id, "process cancellation requested")
+        if changed:
+            try:
+                if task.status == TaskStatus.CANCELLED:
+                    self._log_final_state(task)
+                else:
+                    self.log_service.append(task_id, "process cancellation requested")
+            except Exception:
+                logger.warning("failed to log task cancellation: %s", task_id, exc_info=True)
         return task
 
     def _new_task(
@@ -292,6 +332,12 @@ class TaskService:
         with self._background_lock:
             if self._background_futures.get(task_id) is future:
                 self._background_futures.pop(task_id, None)
+        if not future.cancelled() and (exception := future.exception()) is not None:
+            logger.error(
+                "background task failed: %s",
+                task_id,
+                exc_info=(type(exception), exception, exception.__traceback__),
+            )
 
     async def _run_process_task(
         self,
@@ -307,11 +353,10 @@ class TaskService:
         task = self.task_store.try_start(task_id)
         if task is None:
             return
-        task.progress = 5
-        self.log_service.append(task_id, f"task started: {command}", progress=5)
 
         task_workspace = None
         try:
+            task = self._report_progress(task, 5, f"task started: {command}")
             task_workspace = self.workspace_service.create_task_workspace(
                 project_id,
                 task_id,
@@ -352,11 +397,6 @@ class TaskService:
             else:
                 task.status = TaskStatus.FAILED
                 task.error = f"command exited with code {result.exit_code}"
-            self.log_service.append(
-                task_id,
-                f"task finished with exit code {result.exit_code}",
-                progress=100,
-            )
         except CancellationRequested:
             self._mark_cancelled(task)
         except TimeoutError as exc:
@@ -366,9 +406,16 @@ class TaskService:
         except Exception as exc:
             self._mark_failed(task, str(exc))
         finally:
-            self.task_store.save(task)
-            if task.task_type != TaskType.BUILD or task.status != TaskStatus.SUCCEEDED:
-                self.workspace_service.cleanup_task_workspaces(project_id, task_id)
+            self._finalize_with_cleanup(
+                task,
+                lambda finalized: (
+                    self.workspace_service.cleanup_task_workspaces(project_id, task_id)
+                    if finalized is None
+                    or finalized.task_type != TaskType.BUILD
+                    or finalized.status != TaskStatus.SUCCEEDED
+                    else None
+                ),
+            )
 
     async def _run_schedule_experiment(
         self,
@@ -378,10 +425,9 @@ class TaskService:
         task = self.task_store.try_start(task_id)
         if task is None:
             return
-        task.progress = 10
-        self.log_service.append(task_id, "schedule experiment started", progress=10)
 
         try:
+            task = self._report_progress(task, 10, "schedule experiment started")
             plan = self.scheduler_service.create_plan(
                 task_id=task_id,
                 strategy=request.strategy,
@@ -418,14 +464,17 @@ class TaskService:
                 task.error = "one or more scheduled tasks failed"
             task.progress = 100
             task.finished_at = utc_now()
-            self.log_service.append(task_id, "schedule experiment finished", progress=100)
         except CancellationRequested:
             self._mark_cancelled(task)
         except Exception as exc:
             self._mark_failed(task, str(exc))
         finally:
-            self.task_store.save(task)
-            self.workspace_service.cleanup_task_workspaces(request.project_id, task_id)
+            self._finalize_with_cleanup(
+                task,
+                lambda _: self.workspace_service.cleanup_task_workspaces(
+                    request.project_id, task_id
+                ),
+            )
 
     async def _run_schedule_comparison(
         self,
@@ -435,10 +484,9 @@ class TaskService:
         task = self.task_store.try_start(task_id)
         if task is None:
             return
-        task.progress = 5
-        self.log_service.append(task_id, "schedule comparison started", progress=5)
 
         try:
+            task = self._report_progress(task, 5, "schedule comparison started")
             cwd = self.workspace_service.resolve_work_dir(request.project_id, ".")
             summary = await self.schedule_comparison_service.compare(
                 task_id=task_id,
@@ -473,33 +521,60 @@ class TaskService:
                 task.error = "one or more comparison tasks failed"
             task.progress = 100
             task.finished_at = utc_now()
-            self.log_service.append(task_id, "schedule comparison finished", progress=100)
         except CancellationRequested:
             self._mark_cancelled(task)
         except Exception as exc:
             self._mark_failed(task, str(exc))
         finally:
-            self.task_store.save(task)
-            self.workspace_service.cleanup_task_workspaces(request.project_id, task_id)
+            self._finalize_with_cleanup(
+                task,
+                lambda _: self.workspace_service.cleanup_task_workspaces(
+                    request.project_id, task_id
+                ),
+            )
 
     def _mark_cancelled(self, task: TaskRecord) -> None:
         task.status = TaskStatus.CANCELLED
         task.finished_at = utc_now()
         task.error = "cancelled"
-        self.log_service.append(task.id, "task cancelled", progress=task.progress)
 
-    def _report_progress(self, task: TaskRecord, percent: int, message: str) -> None:
-        task.progress = percent
+    def _report_progress(self, task: TaskRecord, percent: int, message: str) -> TaskRecord:
+        latest = self.task_store.update_progress(task.id, percent)
+        task.progress = latest.progress
+        if latest.status != TaskStatus.RUNNING or latest.cancel_requested:
+            raise CancellationRequested()
         self.log_service.append(
             task.id,
             message,
             stream="co_debug.executor",
-            progress=percent,
+            progress=latest.progress,
         )
+        return latest
 
     def _mark_failed(self, task: TaskRecord, message: str) -> None:
         task.status = TaskStatus.FAILED
         task.finished_at = utc_now()
         task.error = message
-        self.log_service.append(task.id, f"task failed: {message}", progress=task.progress)
+
+    def _log_final_state(self, task: TaskRecord) -> None:
+        if task.status == TaskStatus.SUCCEEDED:
+            message = "task succeeded"
+        elif task.status == TaskStatus.FAILED:
+            message = f"task failed: {task.error}"
+        else:
+            message = "task cancelled"
+        self.log_service.append(task.id, message, progress=task.progress)
+
+    def _finalize_with_cleanup(
+        self,
+        task: TaskRecord,
+        cleanup: Callable[[TaskRecord | None], None],
+    ) -> None:
+        finalized: TaskRecord | None = None
+        try:
+            finalized, changed = self.task_store.finalize_with_transition(task)
+            if changed:
+                self._log_final_state(finalized)
+        finally:
+            cleanup(finalized)
 

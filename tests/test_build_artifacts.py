@@ -134,6 +134,87 @@ def test_succeeded_build_artifacts_survive_service_rebuild(artifact_api, tmp_pat
     log_service.close()
 
 
+def test_running_build_persists_progress_and_finalizes_cancelled(artifact_api) -> None:
+    client, _, project, _, _, _, _ = artifact_api
+    response = client.post(
+        "/api/v1/tasks/build",
+        json={
+            "project_id": str(project.id),
+            "command": [sys.executable, "-c", "import time; time.sleep(5)"],
+            "timeout_seconds": 10,
+        },
+    )
+    assert response.status_code == 200
+    task_id = response.json()["data"]["id"]
+
+    for _ in range(50):
+        task = client.get(f"/api/v1/tasks/{task_id}").json()["data"]
+        if task["status"] == "RUNNING" and 0 < task["progress"] < 100:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("task did not expose running progress")
+
+    cancel_response = client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert cancel_response.status_code == 200
+    for _ in range(50):
+        task = client.get(f"/api/v1/tasks/{task_id}").json()["data"]
+        if task["status"] in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("task did not finalize after cancellation")
+
+    assert task["status"] == "CANCELLED"
+    assert task["finished_at"] is not None
+    task_root = project.root_path / "tasks" / task_id
+    for _ in range(20):
+        if not task_root.exists():
+            break
+        time.sleep(0.05)
+    assert not task_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("command", "timeout_seconds", "status"),
+    [
+        ([sys.executable, "-c", "raise SystemExit(1)"], 10, "FAILED"),
+        ([sys.executable, "-c", "import time; time.sleep(2)"], 1, "FAILED"),
+    ],
+)
+def test_failed_or_timed_out_build_finalizes_and_cleans_workspace(
+    artifact_api, command, timeout_seconds, status
+) -> None:
+    client, _, project, _, _, _, _ = artifact_api
+    response = client.post(
+        "/api/v1/tasks/build",
+        json={
+            "project_id": str(project.id),
+            "command": command,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+    assert response.status_code == 200
+    task_id = response.json()["data"]["id"]
+
+    for _ in range(50):
+        task = client.get(f"/api/v1/tasks/{task_id}").json()["data"]
+        if task["status"] in {"SUCCEEDED", "FAILED", "CANCELLED"}:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("task did not finish in time")
+
+    assert task["status"] == status
+    assert task["finished_at"] is not None
+    task_root = project.root_path / "tasks" / task_id
+    for _ in range(20):
+        if not task_root.exists():
+            break
+        time.sleep(0.05)
+    assert not task_root.exists()
+
+
 def test_artifact_access_rejects_basic_paths_and_ineligible_tasks(artifact_api) -> None:
     client, _, project, workspace_service, task_store, _, _ = artifact_api
     task_id = _create_succeeded_build(client, str(project.id))

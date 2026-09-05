@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.platform.services.log_service import TaskLogService
+from app.platform.services.log_service import LogStreamOverflow, TaskLogService
 
 
 @pytest.mark.parametrize("max_lines", [0, -1])
@@ -80,3 +80,32 @@ async def test_close_is_idempotent_and_all_other_methods_fail() -> None:
         service.subscribe_with_history(task_id)
     with pytest.raises(RuntimeError, match="task log service is closed"):
         service.unsubscribe(task_id, asyncio.Queue())
+
+
+def test_blocked_subscribers_schedule_one_drain_each_and_report_overflow(monkeypatch) -> None:
+    class BlockingLoop:
+        def __init__(self) -> None:
+            self.callbacks = []
+
+        def call_soon_threadsafe(self, callback, *args) -> None:
+            self.callbacks.append((callback, args))
+
+    loop = BlockingLoop()
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    service = TaskLogService(max_lines=2)
+    task_id = uuid4()
+    queues = [service.subscribe(task_id), service.subscribe(task_id)]
+
+    for index in range(100):
+        service.append(task_id, f"event-{index}")
+
+    subscribers = service._subscribers[str(task_id)]
+    assert len(loop.callbacks) == len(queues)
+    assert all(subscriber.drain_scheduled for subscriber in subscribers)
+    assert all(len(subscriber.staging) <= 2 for subscriber in subscribers)
+    assert all(subscriber.overflowed for subscriber in subscribers)
+
+    for callback, args in loop.callbacks:
+        callback(*args)
+    assert all(isinstance(queue.get_nowait(), LogStreamOverflow) for queue in queues)
+    assert [event.message for event in service.history(task_id)] == ["event-98", "event-99"]

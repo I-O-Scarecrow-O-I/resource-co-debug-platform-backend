@@ -1,3 +1,5 @@
+import threading
+import weakref
 from functools import lru_cache
 
 from app.core.config import Settings
@@ -13,6 +15,9 @@ from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_service import TaskService
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
+
+_task_services: weakref.WeakSet[TaskService] = weakref.WeakSet()
+_task_services_lock = threading.Lock()
 
 
 def get_settings() -> Settings:
@@ -64,7 +69,7 @@ def get_schedule_comparison_service() -> ScheduleComparisonService:
 
 @lru_cache
 def get_task_service() -> TaskService:
-    return TaskService(
+    task_service = TaskService(
         workspace_service=get_workspace_service(),
         task_store=get_task_store(),
         log_service=get_log_service(),
@@ -74,13 +79,29 @@ def get_task_service() -> TaskService:
         schedule_comparison_service=get_schedule_comparison_service(),
         default_timeout_seconds=get_settings().default_task_timeout_seconds,
     )
+    with _task_services_lock:
+        _task_services.add(task_service)
+    return task_service
 
 
 def clear_task_service_cache() -> None:
     get_task_service.cache_clear()
 
 
+def _ensure_task_services_can_close(resource_name: str) -> None:
+    with _task_services_lock:
+        active_services = [
+            task_service
+            for task_service in _task_services
+            if not task_service.can_close_resources()
+        ]
+    if active_services:
+        raise RuntimeError(f"task service must be shut down before clearing its {resource_name}")
+
+
 def clear_log_service_cache(*, close: bool = True) -> None:
+    if close:
+        _ensure_task_services_can_close("log service")
     get_task_service.cache_clear()
     get_schedule_comparison_service.cache_clear()
     get_scheduler_service.cache_clear()
@@ -90,10 +111,13 @@ def clear_log_service_cache(*, close: bool = True) -> None:
 
 
 def clear_task_store_cache(*, close: bool = True) -> None:
+    if close:
+        _ensure_task_services_can_close("task store")
+    get_task_service.cache_clear()
+    get_debug_service.cache_clear()
     if close and get_task_store.cache_info().currsize:
         get_task_store().close()
     get_task_store.cache_clear()
-    get_debug_service.cache_clear()
 
 
 @lru_cache

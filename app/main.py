@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
@@ -15,8 +16,11 @@ from app.platform.api.deps import (
     get_task_service,
 )
 from app.platform.api.router import api_router
+from app.platform.api.upload_limit import ProjectUploadSizeLimitMiddleware
 from app.platform.schemas.common import ApiResponse
+from app.platform.services.log_service import LogStreamOverflow
 from app.platform.services.task_service import TaskService
+from app.platform.services.workspace_service import WorkspaceService
 
 
 @asynccontextmanager
@@ -52,6 +56,11 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix="/api/v1")
 
     app.add_middleware(
+        ProjectUploadSizeLimitMiddleware,
+        max_body_bytes=WorkspaceService.MAX_PROJECT_UPLOAD_BODY_BYTES,
+    )
+
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_cors_origins,
         allow_credentials=False,
@@ -68,6 +77,12 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/v1/tasks/{task_id}/logs")
     async def stream_task_logs(websocket: WebSocket, task_id: str) -> None:
+        try:
+            get_task_service().require_task(UUID(task_id))
+        except (AppError, ValueError):
+            await websocket.close(code=1008)
+            return
+
         log_service = get_log_service()
         await websocket.accept()
 
@@ -78,6 +93,9 @@ def create_app() -> FastAPI:
 
             while True:
                 event = await queue.get()
+                if isinstance(event, LogStreamOverflow):
+                    await websocket.close(code=1013)
+                    return
                 if event.sequence > cutover_sequence:
                     await websocket.send_json(event.model_dump(mode="json"))
         except WebSocketDisconnect:
