@@ -100,3 +100,8 @@ class TaskResponse(BaseModel):
             metadata=task.metadata,
         )
 
+
+class BuildArtifactResponse(BaseModel):
+    path: str
+    size_bytes: int
+

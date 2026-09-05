@@ -2,14 +2,14 @@ from functools import lru_cache
 
 from app.core.config import Settings
 from app.core.config import get_settings as load_settings
-from app.platform.services.debug_service import DebugSessionService
-from app.platform.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.debug_service import DebugSessionService
+from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.metric_service import AcceptanceMetricService
+from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
+from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
+from app.modules.co_debug.services.scheduler_service import SchedulerService
 from app.platform.services.log_service import TaskLogService
-from app.platform.services.metric_service import AcceptanceMetricService
 from app.platform.services.process_runner import ProcessRunner
-from app.platform.services.schedule_comparison_service import ScheduleComparisonService
-from app.platform.services.schedule_execution_service import ScheduleExecutionService
-from app.platform.services.scheduler_service import SchedulerService
 from app.platform.services.task_service import TaskService
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService

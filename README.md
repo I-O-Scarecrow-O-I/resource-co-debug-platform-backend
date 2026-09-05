@@ -24,6 +24,10 @@ The repository is organized as a main backend platform plus contract backend mod
 - `app/platform`: shared backend foundation
 - `app/modules/co_debug`: module 2, resource-coordinated debugging and optimization
 
+`app/platform/services` holds shared execution infrastructure. Module 2 business services and
+module-specific schemas live under `app/modules/co_debug/services` and
+`app/modules/co_debug/schemas`; `app/platform/api/deps.py` composes them with platform services.
+
 The shared platform currently provides:
 
 - A1 workspace management
@@ -64,6 +68,8 @@ deployments require a pub/sub backend.
 - `GET /api/v1/tasks`
 - `GET /api/v1/tasks/{task_id}`
 - `GET /api/v1/tasks/{task_id}/logs`
+- `GET /api/v1/tasks/{task_id}/artifacts`
+- `GET /api/v1/tasks/{task_id}/artifacts/{artifact_path}`
 - `POST /api/v1/tasks/{task_id}/cancel`
 - `POST /api/v1/modules/co-debug/dependencies/analyze`
 - `GET /api/v1/modules/co-debug/debug/sessions/{task_id}`

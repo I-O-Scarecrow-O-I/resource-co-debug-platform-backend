@@ -1,7 +1,7 @@
 from uuid import UUID
 
+from app.modules.co_debug.schemas.debug import DebugSessionResponse
 from app.platform.domain.enums import TaskType
-from app.platform.schemas.debug import DebugSessionResponse
 from app.platform.services.task_store import TaskStore
 
 

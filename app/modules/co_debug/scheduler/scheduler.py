@@ -1,6 +1,6 @@
 from app.modules.co_debug.scheduler.contracts import TaskContext
+from app.modules.co_debug.schemas.scheduler import SchedulePlan, TaskAssignment
 from app.platform.domain.enums import SchedulerStrategy
-from app.platform.schemas.scheduler import SchedulePlan, TaskAssignment
 from app.platform.schemas.tasks import TaskExecutionSpec
 
 

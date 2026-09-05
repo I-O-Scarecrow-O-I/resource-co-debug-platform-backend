@@ -1,7 +1,9 @@
 import json
+import os
+import stat
 import threading
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from shutil import copyfileobj, copytree, rmtree
 from uuid import UUID, uuid4
 from zipfile import ZipFile
@@ -122,11 +124,101 @@ class WorkspaceService:
 
     def resolve_task_workspace(self, project_id: UUID, task_id: UUID) -> Path:
         project = self.require_project(project_id)
-        workspace = (project.root_path / "tasks" / str(task_id) / "workspace").resolve()
-        tasks_root = (project.root_path / "tasks").resolve()
-        if not workspace.is_relative_to(tasks_root) or not workspace.is_dir():
+        project_root = project.root_path
+        tasks_root = project_root / "tasks"
+        task_root = tasks_root / str(task_id)
+        workspace = tasks_root / str(task_id) / "workspace"
+        for path in (project_root, tasks_root, task_root, workspace):
+            if self._is_link_or_reparse_point(path):
+                raise AppError(f"unsafe build workspace: {task_id}")
+
+        resolved_storage_root = self.storage_root.resolve()
+        resolved_project_root = project_root.resolve()
+        resolved_workspace = workspace.resolve()
+        resolved_tasks_root = tasks_root.resolve()
+        resolved_task_root = task_root.resolve()
+        if not (
+            resolved_project_root.is_relative_to(resolved_storage_root)
+            and resolved_tasks_root.is_relative_to(resolved_project_root)
+            and resolved_task_root.is_relative_to(resolved_tasks_root)
+            and resolved_workspace.is_relative_to(resolved_task_root)
+        ):
+            raise AppError(f"unsafe build workspace: {task_id}")
+        if not resolved_workspace.is_dir():
             raise AppError(f"build workspace does not exist: {task_id}")
-        return workspace
+        return resolved_workspace
+
+    def list_task_artifacts(self, project_id: UUID, task_id: UUID) -> list[tuple[str, int]]:
+        workspace = self.resolve_task_workspace(project_id, task_id)
+        artifacts: list[tuple[str, int]] = []
+        for current_root, directories, filenames in os.walk(workspace, followlinks=False):
+            current_path = Path(current_root)
+            directories[:] = [
+                name
+                for name in directories
+                if not self._is_link_or_reparse_point(current_path / name)
+            ]
+            for filename in filenames:
+                path = current_path / filename
+                if self._is_link_or_reparse_point(path):
+                    continue
+                try:
+                    if not stat.S_ISREG(path.stat().st_mode):
+                        continue
+                    relative_path = path.relative_to(workspace).as_posix()
+                    artifacts.append((relative_path, path.stat().st_size))
+                except OSError:
+                    continue
+        return sorted(artifacts)
+
+    def resolve_task_artifact(
+        self,
+        project_id: UUID,
+        task_id: UUID,
+        artifact_path: str,
+    ) -> Path:
+        workspace = self.resolve_task_workspace(project_id, task_id)
+        requested_path = Path(artifact_path)
+        windows_path = PureWindowsPath(artifact_path)
+        if (
+            not artifact_path
+            or requested_path.is_absolute()
+            or requested_path.drive
+            or requested_path.root
+            or requested_path.anchor
+            or windows_path.drive
+            or windows_path.root
+            or windows_path.anchor
+        ):
+            raise AppError("artifact_path must be a non-empty relative path")
+
+        candidate = workspace / requested_path
+        resolved_candidate = candidate.resolve()
+        if not resolved_candidate.is_relative_to(workspace):
+            raise AppError("artifact_path must stay inside the build workspace")
+
+        current = workspace
+        for component in requested_path.parts:
+            current /= component
+            if self._is_link_or_reparse_point(current):
+                raise AppError("artifact_path must not contain links or reparse points")
+
+        if not candidate.exists():
+            raise NotFoundError(f"artifact not found: {artifact_path}")
+        if not stat.S_ISREG(candidate.stat().st_mode):
+            raise AppError("artifact_path must reference a regular file")
+        return candidate
+
+    @staticmethod
+    def _is_link_or_reparse_point(path: Path) -> bool:
+        try:
+            path_stat = path.lstat()
+        except OSError:
+            return False
+        return stat.S_ISLNK(path_stat.st_mode) or bool(
+            getattr(path_stat, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
 
     def cleanup_task_workspaces(self, project_id: UUID, task_id: UUID) -> None:
         project = self.require_project(project_id)

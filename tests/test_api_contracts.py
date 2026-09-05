@@ -6,7 +6,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.platform.services.scheduler_service import _default_core_ids
+from app.modules.co_debug.services.scheduler_service import _default_core_ids
 
 client = TestClient(app)
 

@@ -2,10 +2,12 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 
 from app.platform.api.deps import get_log_service, get_task_service
 from app.platform.schemas.common import ApiResponse, LogEvent
 from app.platform.schemas.tasks import (
+    BuildArtifactResponse,
     BuildTaskRequest,
     DebugTaskRequest,
     ScheduleComparisonRequest,
@@ -77,6 +79,27 @@ async def get_task_logs(
 ) -> ApiResponse[list[LogEvent]]:
     task_service.require_task(task_id)
     return ApiResponse.ok(log_service.history(str(task_id)))
+
+
+@router.get("/{task_id}/artifacts", response_model=ApiResponse[list[BuildArtifactResponse]])
+async def list_build_artifacts(
+    task_id: UUID,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+) -> ApiResponse[list[BuildArtifactResponse]]:
+    artifacts = task_service.list_build_artifacts(task_id)
+    return ApiResponse.ok(
+        [BuildArtifactResponse(path=path, size_bytes=size_bytes) for path, size_bytes in artifacts]
+    )
+
+
+@router.get("/{task_id}/artifacts/{artifact_path:path}")
+async def download_build_artifact(
+    task_id: UUID,
+    artifact_path: str,
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+) -> FileResponse:
+    artifact = task_service.resolve_build_artifact(task_id, artifact_path)
+    return FileResponse(artifact, filename=artifact.name)
 
 
 @router.post("/{task_id}/cancel", response_model=ApiResponse[TaskResponse])

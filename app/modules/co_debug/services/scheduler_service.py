@@ -4,8 +4,8 @@ from uuid import UUID
 
 from app.modules.co_debug.scheduler.contracts import TaskContext
 from app.modules.co_debug.scheduler.scheduler import plan_tasks
+from app.modules.co_debug.schemas.scheduler import SchedulePlan
 from app.platform.domain.enums import SchedulerStrategy
-from app.platform.schemas.scheduler import SchedulePlan
 from app.platform.schemas.tasks import TaskExecutionSpec
 from app.platform.services.log_service import TaskLogService
 

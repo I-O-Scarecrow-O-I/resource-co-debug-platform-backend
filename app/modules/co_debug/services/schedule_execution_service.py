@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.core.errors import CancellationRequested
-from app.platform.schemas.scheduler import (
+from app.modules.co_debug.schemas.scheduler import (
     ExecutedTaskResult,
     ScheduleExecutionResult,
     SchedulePlan,

@@ -3,9 +3,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.modules.co_debug.services.scheduler_service import SchedulerService
 from app.platform.domain.enums import SchedulerStrategy
 from app.platform.services.log_service import TaskLogService
-from app.platform.services.scheduler_service import SchedulerService
 
 
 def _service() -> SchedulerService:

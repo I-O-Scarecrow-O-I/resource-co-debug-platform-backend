@@ -3,13 +3,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
+from app.modules.co_debug.schemas.debug import DebugSessionResponse
+from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse
+from app.modules.co_debug.services.debug_service import DebugSessionService
+from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.platform.api.deps import get_debug_service, get_dependency_service, get_metric_service
 from app.platform.schemas.common import ApiResponse
-from app.platform.schemas.debug import DebugSessionResponse
-from app.platform.schemas.dependencies import DependencyAnalysisResponse
-from app.platform.services.debug_service import DebugSessionService
-from app.platform.services.dependency_service import DependencyAnalysisService
-from app.platform.services.metric_service import AcceptanceMetricService
 
 router = APIRouter()
 

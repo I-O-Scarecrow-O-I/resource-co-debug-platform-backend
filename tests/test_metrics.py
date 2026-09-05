@@ -1,4 +1,4 @@
-from app.platform.services.metric_service import AcceptanceMetricService
+from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 
 
 def test_build_success_rate() -> None:

@@ -13,6 +13,9 @@ The platform layer is shared by all contract backend modules. It owns:
 - future artifact/report persistence
 
 Contract backend modules must not implement separate task, log, progress, or cancellation systems.
+`app/platform/services` contains only the shared runtime base: workspace, task lifecycle, task
+storage, logs, and controlled process execution. The current composition root in
+`app/platform/api/deps.py` assembles module services with those platform services.
 
 ## Contract Backend Modules
 
@@ -36,5 +39,8 @@ The `co_debug` module owns:
 - resource-aware multi-core scheduling
 - acceptance metrics for build success rate and scheduling improvement
 
-The `co_debug.scheduler` submodule is called as ordinary Python functions by the platform.
-The platform remains responsible for starting Make/GCC/GDB as controlled subprocesses.
+Its services and module-specific response/plan schemas live under
+`app/modules/co_debug/services` and `app/modules/co_debug/schemas`. The `co_debug.scheduler`
+submodule is called as ordinary Python functions by the platform integration point. The platform
+remains responsible for starting Make/GCC/GDB as controlled subprocesses through `ProcessRunner`.
+No generic task-handler or plugin abstraction is introduced until another module needs one.

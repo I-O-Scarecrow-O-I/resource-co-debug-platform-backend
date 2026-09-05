@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.platform.services.metric_service import AcceptanceMetricService
+from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from scripts.run_scheduler_comparison_demo import (
     build_comparison_payload,
     default_core_ids,

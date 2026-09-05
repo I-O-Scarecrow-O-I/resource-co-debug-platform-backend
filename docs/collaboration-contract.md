@@ -115,6 +115,11 @@ successful build task ID. The platform then resolves the executable from that bu
 workspace and runs GDB in a separate copy. If omitted, `executable_path` is resolved from the
 uploaded project source.
 
+Successful BUILD tasks expose retained regular files through
+`GET /api/v1/tasks/{task_id}/artifacts` and
+`GET /api/v1/tasks/{task_id}/artifacts/{artifact_path}`. The list contains relative POSIX paths
+and byte sizes; frontend clients should use those paths unchanged for downloads.
+
 Schedule experiment:
 
 ```json

@@ -5,10 +5,10 @@ import pytest
 
 from app.modules.co_debug.scheduler.contracts import TaskContext
 from app.modules.co_debug.scheduler.scheduler import plan_tasks
+from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
 from app.platform.domain.enums import SchedulerStrategy
 from app.platform.schemas.tasks import TaskExecutionSpec
 from app.platform.services.process_runner import ProcessRunner
-from app.platform.services.schedule_execution_service import ScheduleExecutionService
 
 
 def _context() -> TaskContext:

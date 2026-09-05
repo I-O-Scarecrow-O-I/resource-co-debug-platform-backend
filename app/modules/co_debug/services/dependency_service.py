@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from app.platform.schemas.dependencies import DependencyAnalysisResponse
+from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse
 from app.platform.services.workspace_service import WorkspaceService
 
 

@@ -2,11 +2,15 @@ import asyncio
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from app.core.errors import AppError, CancellationRequested
 from app.core.time import utc_now
+from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
+from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
+from app.modules.co_debug.services.scheduler_service import SchedulerService
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
 from app.platform.schemas.tasks import (
@@ -17,9 +21,6 @@ from app.platform.schemas.tasks import (
 )
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
-from app.platform.services.schedule_comparison_service import ScheduleComparisonService
-from app.platform.services.schedule_execution_service import ScheduleExecutionService
-from app.platform.services.scheduler_service import SchedulerService
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
 
@@ -146,7 +147,7 @@ class TaskService:
             module=request.module,
             project_id=request.project_id,
             task_type=TaskType.SCHEDULE_COMPARISON,
-            command=["app.platform.services.schedule_comparison_service.compare"],
+            command=["app.modules.co_debug.services.schedule_comparison_service.compare"],
             metadata=request.metadata,
         )
         self._start_background(task.id, lambda: self._run_schedule_comparison(task.id, request))
@@ -157,6 +158,18 @@ class TaskService:
 
     def require_task(self, task_id: UUID) -> TaskRecord:
         return self.task_store.require(task_id)
+
+    def list_build_artifacts(self, task_id: UUID) -> list[tuple[str, int]]:
+        task = self._require_succeeded_build_task(task_id)
+        return self.workspace_service.list_task_artifacts(task.project_id, task.id)
+
+    def resolve_build_artifact(self, task_id: UUID, artifact_path: str) -> Path:
+        task = self._require_succeeded_build_task(task_id)
+        return self.workspace_service.resolve_task_artifact(
+            task.project_id,
+            task.id,
+            artifact_path,
+        )
 
     async def startup(self) -> None:
         with self._lifecycle_lock:
@@ -241,6 +254,14 @@ class TaskService:
             metadata=metadata,
         )
         self.task_store.save(task)
+        return task
+
+    def _require_succeeded_build_task(self, task_id: UUID) -> TaskRecord:
+        task = self.require_task(task_id)
+        if task.task_type != TaskType.BUILD:
+            raise AppError("artifacts are only available for build tasks")
+        if task.status != TaskStatus.SUCCEEDED:
+            raise AppError("artifacts are only available for succeeded build tasks")
         return task
 
     def _start_background(

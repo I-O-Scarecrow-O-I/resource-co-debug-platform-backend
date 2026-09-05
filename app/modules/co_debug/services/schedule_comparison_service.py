@@ -3,16 +3,16 @@ from pathlib import Path
 from uuid import UUID
 
 from app.core.errors import CancellationRequested
-from app.platform.domain.enums import SchedulerStrategy
-from app.platform.schemas.scheduler import (
+from app.modules.co_debug.schemas.scheduler import (
     ScheduleComparisonSummary,
     StrategyRunResult,
     WorkloadComparisonResult,
 )
+from app.modules.co_debug.services.metric_service import AcceptanceMetricService
+from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
+from app.modules.co_debug.services.scheduler_service import SchedulerService
+from app.platform.domain.enums import SchedulerStrategy
 from app.platform.schemas.tasks import ScheduleWorkloadSpec
-from app.platform.services.metric_service import AcceptanceMetricService
-from app.platform.services.schedule_execution_service import ScheduleExecutionService
-from app.platform.services.scheduler_service import SchedulerService
 
 LogCallback = Callable[[str, str], None]
 ProgressCallback = Callable[[int, str], None]
