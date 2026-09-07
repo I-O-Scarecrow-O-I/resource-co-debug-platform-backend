@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from app.modules.co_debug.schemas.debug import DebugSessionResponse
 from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse
 from app.modules.co_debug.services.debug_service import DebugSessionService
-from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.dependency_service import DependencyAnalysisService, DependencyRepairResponse
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.platform.api.deps import get_debug_service, get_dependency_service, get_metric_service
 from app.platform.schemas.common import ApiResponse
@@ -21,6 +21,22 @@ async def analyze_dependencies(
 ) -> ApiResponse[DependencyAnalysisResponse]:
     return ApiResponse.ok(dependency_service.analyze(project_id))
 
+@router.post(
+    "/dependencies/repair",
+    response_model=ApiResponse[
+        DependencyRepairResponse
+    ],
+)
+async def repair_dependencies(
+    project_id: UUID,
+    dependency_service: Annotated[
+        DependencyAnalysisService,
+        Depends(get_dependency_service),
+    ],
+) -> ApiResponse[DependencyRepairResponse]:
+    return ApiResponse.ok(
+        dependency_service.repair(project_id)
+    )
 
 @router.get("/debug/sessions/{task_id}", response_model=ApiResponse[DebugSessionResponse])
 async def describe_debug_session(

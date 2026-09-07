@@ -49,3 +49,19 @@ class MissingDependency:
     target: str
     dependency: str
     source_file: str
+
+@dataclass(slots=True)
+class RepairedBuildConfig:
+    original_makefile: Path
+
+    # 预览模式下为 None；
+    # 真正写入文件后保存 Makefile.repaired 的路径。
+    repaired_makefile: Path | None = None
+
+    # 修复后的完整 Makefile 文本。
+    content: str = ""
+
+    # 本次真正补偿了哪些依赖。
+    applied_dependencies: list[MissingDependency] = field(
+        default_factory=list
+    )
