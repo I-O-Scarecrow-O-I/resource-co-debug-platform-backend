@@ -82,23 +82,23 @@ async def get_task_logs(
 
 
 @router.get("/{task_id}/artifacts", response_model=ApiResponse[list[BuildArtifactResponse]])
-async def list_build_artifacts(
+async def list_task_artifacts(
     task_id: UUID,
     task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> ApiResponse[list[BuildArtifactResponse]]:
-    artifacts = task_service.list_build_artifacts(task_id)
+    artifacts = task_service.list_task_artifacts(task_id)
     return ApiResponse.ok(
         [BuildArtifactResponse(path=path, size_bytes=size_bytes) for path, size_bytes in artifacts]
     )
 
 
 @router.get("/{task_id}/artifacts/{artifact_path:path}")
-async def download_build_artifact(
+async def download_task_artifact(
     task_id: UUID,
     artifact_path: str,
     task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> FileResponse:
-    artifact = task_service.resolve_build_artifact(task_id, artifact_path)
+    artifact = task_service.resolve_task_artifact(task_id, artifact_path)
     return FileResponse(artifact, filename=artifact.name)
 
 

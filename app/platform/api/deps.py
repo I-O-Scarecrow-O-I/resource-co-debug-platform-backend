@@ -10,6 +10,7 @@ from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
 from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
 from app.modules.co_debug.services.scheduler_service import SchedulerService
+from app.modules.code_generation.deps import get_code_generation_service
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_service import TaskService
@@ -78,6 +79,8 @@ def get_task_service() -> TaskService:
         schedule_execution_service=get_schedule_execution_service(),
         schedule_comparison_service=get_schedule_comparison_service(),
         default_timeout_seconds=get_settings().default_task_timeout_seconds,
+        naturalcc_service=get_code_generation_service(),
+        naturalcc_approve_execute=get_settings().naturalcc_approve_execute,
     )
     with _task_services_lock:
         _task_services.add(task_service)

@@ -242,6 +242,25 @@ class TaskStore:
             self._tasks[task_id] = latest
             return latest
 
+    def merge_metadata(self, task_id: UUID, updates: dict[str, object]) -> TaskRecord:
+        """Atomically merge adapter-owned metadata without saving a stale TaskRecord."""
+        with self._lock, self._connection:
+            self._ensure_open()
+            cursor = self._connection.execute(
+                """
+                UPDATE tasks
+                SET metadata_json = json_patch(metadata_json, ?), revision = revision + 1
+                WHERE id = ?
+                """,
+                (self._json(updates), str(task_id)),
+            )
+            if cursor.rowcount != 1:
+                raise NotFoundError(f"task not found: {task_id}")
+            latest = self._load(task_id)
+            assert latest is not None
+            self._tasks[task_id] = latest
+            return latest
+
     def finalize(self, task: TaskRecord) -> TaskRecord:
         finalized, _ = self.finalize_with_transition(task)
         return finalized

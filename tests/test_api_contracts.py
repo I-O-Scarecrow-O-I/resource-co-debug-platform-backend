@@ -29,7 +29,7 @@ def test_upload_project_and_query_it() -> None:
     assert response.json()["data"]["id"] == project["id"]
 
 
-def test_module_registry_lists_co_debug_module() -> None:
+def test_module_registry_lists_backend_modules() -> None:
     response = client.get("/api/v1/modules")
 
     assert response.status_code == 200
@@ -39,7 +39,12 @@ def test_module_registry_lists_co_debug_module() -> None:
             "name": "co_debug",
             "route_prefix": "/modules/co-debug",
             "version": "0.1.0",
-        }
+        },
+        {
+            "name": "code_generation",
+            "route_prefix": "/modules/code-generation",
+            "version": "0.1.0",
+        },
     ]
 
 

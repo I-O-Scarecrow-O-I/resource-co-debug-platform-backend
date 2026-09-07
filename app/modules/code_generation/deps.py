@@ -1,0 +1,17 @@
+from functools import lru_cache
+
+from app.core.config import get_settings
+from app.modules.code_generation.client import NaturalCCClient
+from app.modules.code_generation.service import NaturalCCService
+
+
+@lru_cache
+def get_code_generation_service() -> NaturalCCService:
+    settings = get_settings()
+    return NaturalCCService(
+        NaturalCCClient(
+            base_url=settings.naturalcc_base_url,
+            connect_timeout_seconds=settings.naturalcc_connect_timeout_seconds,
+            request_timeout_seconds=settings.naturalcc_request_timeout_seconds,
+        )
+    )

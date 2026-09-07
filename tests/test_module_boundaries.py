@@ -27,8 +27,12 @@ def test_co_debug_ownership_and_public_routes_remain_stable() -> None:
 
     assert [(module.name, module.route_prefix) for module in get_backend_modules()] == [
         ("co_debug", "/modules/co-debug"),
+        ("code_generation", "/modules/code-generation"),
     ]
     paths = set(app.openapi()["paths"])
     assert "/api/v1/modules/co-debug/dependencies/analyze" in paths
     assert "/api/v1/modules/co-debug/debug/sessions/{task_id}" in paths
     assert "/api/v1/modules/co-debug/metrics/build-success-rate" in paths
+    assert "/api/v1/modules/code-generation/health" in paths
+    assert "/api/v1/modules/code-generation/capabilities" in paths
+    assert "/api/v1/modules/code-generation/runs" not in paths

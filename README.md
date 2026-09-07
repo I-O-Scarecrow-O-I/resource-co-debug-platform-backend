@@ -78,6 +78,27 @@ deployments require a pub/sub backend.
 - `GET /api/v1/modules`
 - `WS /ws/v1/tasks/{task_id}/logs`
 
+## NaturalCC 接入
+
+NaturalCC 是独立的 Python 3.12 服务，固定使用 `O:\Code\naturalcc-ncc3` 的 commit
+`31997c7`；后端保持 Python 3.11，且不修改 NaturalCC。先在 NaturalCC 服务进程环境中设置
+模型密钥（本后端请求、`.env` 和示例均不接收或保存密钥），然后启动服务：
+
+```powershell
+Set-Location O:\Code\naturalcc-ncc3
+& O:\Code_dependency\python_envs\naturalcc-code-agent-py312\Scripts\python.exe -m code_agent.agent_web_api --host 127.0.0.1 --port 7860
+```
+
+后端 `.env` 只配置 `NATURALCC_BASE_URL`、超时和 `NATURALCC_APPROVE_EXECUTE=false`。默认仅
+批准 `write`；仅在 NaturalCC 运行于隔离容器或受限操作系统账号时，才可显式设为 `true` 批准
+`execute`。启动后以 `GET /api/health` 冒烟验证后端，再以
+`GET /api/v1/modules/code-generation/health` 验证连通性。
+
+固定 commit 已自带且由 Git 跟踪 `tokenizer.json` 与 `tokenizer_config.json`；模型权重尚未下载。
+当前 Windows 环境还缺少 LLVM/libclang 18，因此 C/C++ 解析尚未验收。
+本后端只承担集成和任务生命周期。算法质量及“漏洞不超过 2 个/100 行”由模块一交付方验收，当前
+没有由后端保证该指标的稳定机器契约。详见 `docs/naturalcc-integration.md`。
+
 See `docs/collaboration-contract.md` for the frontend and module-C coordination contract.
 
 C模块的人工触发方式、自动对比流程和合同指标判断见

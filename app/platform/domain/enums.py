@@ -18,6 +18,7 @@ class BackendModuleName(StrEnum):
 class TaskType(StrEnum):
     CODE_GENERATION = "CODE_GENERATION"
     CODE_REPAIR = "CODE_REPAIR"
+    CODE_REFACTOR = "CODE_REFACTOR"
     BUILD = "BUILD"
     DEBUG = "DEBUG"
     SCHEDULE_EXPERIMENT = "SCHEDULE_EXPERIMENT"
@@ -33,6 +34,12 @@ class TaskStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+class CodeGenerationOperation(StrEnum):
+    COMPLETION = "completion"
+    REPAIR = "repair"
+    REFACTOR = "refactor"
 
 
 class SchedulerStrategy(StrEnum):

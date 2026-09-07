@@ -161,6 +161,29 @@ def test_progress_updates_are_atomic_monotonic_and_do_not_overwrite_cancellation
         first.update_progress(task.id, 101)
 
 
+def test_metadata_merge_preserves_concurrent_cancellation(tmp_path) -> None:
+    database_path = tmp_path / "tasks.sqlite3"
+    worker_store = TaskStore(database_path)
+    task = _task()
+    worker_store.save(task)
+    assert worker_store.try_start(task.id) is not None
+
+    worker_store.request_cancel(task.id)
+    merged = worker_store.merge_metadata(
+        task.id,
+        {"naturalcc_run_id": "run-1", "cleanup_pending": True},
+    )
+
+    assert merged.metadata == {
+        "owner": "test",
+        "naturalcc_run_id": "run-1",
+        "cleanup_pending": True,
+    }
+    latest = worker_store.require(task.id)
+    assert latest.status == TaskStatus.RUNNING
+    assert latest.cancel_requested is True
+
+
 def test_cancelled_finalization_preserves_progress_at_cancel_request(tmp_path) -> None:
     database_path = tmp_path / "tasks.sqlite3"
     worker_store = TaskStore(database_path)
