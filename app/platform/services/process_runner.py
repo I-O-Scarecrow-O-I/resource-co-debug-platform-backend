@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 
 from app.core.errors import CancellationRequested
 
@@ -42,25 +43,31 @@ class ProcessRunner:
             if os.name == "posix"
             else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         )
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **process_options,
-        )
-        process_group = self._create_process_group(process.pid)
-        if on_process_started:
-            on_process_started(process)
-        affinity_applied = self._apply_cpu_affinity(process.pid, cpu_core, on_log)
-
-        readers = [
-            asyncio.create_task(self._stream_output(process.stdout, "stdout", on_log)),
-            asyncio.create_task(self._stream_output(process.stderr, "stderr", on_log)),
-        ]
-
-        wait_task = asyncio.create_task(process.wait())
+        process: asyncio.subprocess.Process | None = None
+        process_group: int | None = None
+        readers: list[asyncio.Task[None]] = []
+        exit_code: int | None = None
+        affinity_applied = False
+        failure: BaseException | None = None
+        failure_traceback: TracebackType | None = None
         try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **process_options,
+            )
+            process_group = self._create_process_group(process.pid)
+            if on_process_started:
+                on_process_started(process)
+            affinity_applied = self._apply_cpu_affinity(process.pid, cpu_core, on_log)
+
+            readers = [
+                asyncio.create_task(self._stream_output(process.stdout, "stdout", on_log)),
+                asyncio.create_task(self._stream_output(process.stderr, "stderr", on_log)),
+            ]
+            wait_task = asyncio.create_task(process.wait())
             exit_code = await self._wait_with_control(
                 process,
                 wait_task,
@@ -68,20 +75,73 @@ class ProcessRunner:
                 is_cancelled,
                 process_group,
             )
-        except asyncio.CancelledError:
-            await self._terminate_process_group(process, process_group)
-            raise
-        finally:
-            await self._cleanup_process_group(process, process_group)
-            await self._drain_readers(readers)
-            self._close_process_group(process_group)
+        except BaseException as exc:
+            failure = exc
+            failure_traceback = exc.__traceback__
+
+        cleanup_cancelled = False
+        cleanup_failure: BaseException | None = None
+        if process is not None:
+            try:
+                cleanup_cancelled = await self._finish_process_cleanup(
+                    process,
+                    process_group,
+                    readers,
+                )
+            except BaseException as exc:
+                cleanup_failure = exc
+
+        if failure is not None:
+            if cleanup_failure is not None:
+                failure.add_note(f"process cleanup failed: {cleanup_failure!r}")
+            raise failure.with_traceback(failure_traceback)
+        if cleanup_failure is not None:
+            raise cleanup_failure
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
 
         elapsed_ms = round((time.perf_counter() - started) * 1000)
+        assert exit_code is not None
         return ProcessResult(
             exit_code=exit_code,
             elapsed_ms=elapsed_ms,
             affinity_applied=affinity_applied,
         )
+
+    async def _finish_process_cleanup(
+        self,
+        process: asyncio.subprocess.Process,
+        process_group: int | None,
+        readers: list[asyncio.Task[None]],
+    ) -> bool:
+        cleanup_task = asyncio.create_task(
+            self._cleanup_process(process, process_group, readers)
+        )
+        cancelled = False
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup_task.result()
+        return cancelled
+
+    async def _cleanup_process(
+        self,
+        process: asyncio.subprocess.Process,
+        process_group: int | None,
+        readers: list[asyncio.Task[None]],
+    ) -> None:
+        try:
+            if process.returncode is None:
+                await self._terminate_process_group(process, process_group)
+            else:
+                await self._cleanup_process_group(process, process_group)
+        finally:
+            try:
+                await self._drain_readers(readers)
+            finally:
+                self._close_process_group(process_group)
 
     def _apply_cpu_affinity(
         self,

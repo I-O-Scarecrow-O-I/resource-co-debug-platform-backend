@@ -17,6 +17,16 @@ Contract backend modules must not implement separate task, log, progress, or can
 storage, logs, and controlled process execution. The current composition root in
 `app/platform/api/deps.py` assembles module services with those platform services.
 
+Modules that need to prepare a local command in an isolated task workspace call
+`TaskService.create_prepared_process_task(...)`. Their preparer receives only
+`TaskPreparationContext` (task/project IDs, workspace, logs, progress, and cooperative
+cancellation) and returns `PreparedProcess(command, work_dir)`. The platform validates and
+persists that command, then owns execution, timeout, process control, finalization, cleanup, and
+artifact retention. B/C modules must not directly manage `TaskStore`, `WorkspaceService`, or
+`ProcessRunner`. This is a narrow integration contract, not a generic plugin framework.
+Preparers must be async; their timeout is one total deadline covering preparation and process
+execution. A cancelled or timed-out preparer must not suppress `asyncio.CancelledError`.
+
 ## Contract Backend Modules
 
 The contract backend modules are:

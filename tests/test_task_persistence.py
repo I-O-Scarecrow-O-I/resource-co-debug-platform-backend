@@ -161,6 +161,25 @@ def test_progress_updates_are_atomic_monotonic_and_do_not_overwrite_cancellation
         first.update_progress(task.id, 101)
 
 
+def test_command_update_requires_running_task_without_cancellation(tmp_path) -> None:
+    database_path = tmp_path / "tasks.sqlite3"
+    worker_store = TaskStore(database_path)
+    canceller_store = TaskStore(database_path)
+    task = _task()
+    task.command = []
+    worker_store.save(task)
+
+    assert worker_store.update_command_if_running(task.id, ["prepared"]) is None
+    assert worker_store.try_start(task.id) is not None
+    canceller_store.request_cancel(task.id)
+
+    assert worker_store.update_command_if_running(task.id, ["prepared"]) is None
+    latest = worker_store.require(task.id)
+    assert latest.command == []
+    assert latest.cancel_requested is True
+    assert latest.revision == 2
+
+
 def test_metadata_merge_preserves_concurrent_cancellation(tmp_path) -> None:
     database_path = tmp_path / "tasks.sqlite3"
     worker_store = TaskStore(database_path)

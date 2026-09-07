@@ -562,3 +562,79 @@ async def test_process_runner_timeout_is_bounded(tmp_path) -> None:
         )
 
     assert time.perf_counter() - started < 3
+
+
+@pytest.mark.asyncio
+async def test_process_runner_terminates_process_when_started_callback_fails(tmp_path) -> None:
+    process_holder: dict[str, asyncio.subprocess.Process] = {}
+
+    def fail_after_spawn(process: asyncio.subprocess.Process) -> None:
+        process_holder["process"] = process
+        raise RuntimeError("registration failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="registration failed"):
+            await ProcessRunner().run(
+                command=[sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=tmp_path,
+                timeout_seconds=10,
+                on_log=lambda _message, _stream: None,
+                is_cancelled=lambda: False,
+                on_process_started=fail_after_spawn,
+            )
+
+        assert process_holder["process"].returncode is not None
+    finally:
+        process = process_holder.get("process")
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_process_runner_cleanup_survives_repeated_cancellation(tmp_path) -> None:
+    class DelayedTerminationProcessRunner(ProcessRunner):
+        def __init__(self) -> None:
+            self.termination_started = asyncio.Event()
+            self.allow_termination = asyncio.Event()
+
+        async def _terminate_process_group(self, process, process_group) -> None:
+            self.termination_started.set()
+            await self.allow_termination.wait()
+            await super()._terminate_process_group(process, process_group)
+
+    runner = DelayedTerminationProcessRunner()
+    process_holder: dict[str, asyncio.subprocess.Process] = {}
+    started = asyncio.Event()
+
+    def record_process(process: asyncio.subprocess.Process) -> None:
+        process_holder["process"] = process
+        started.set()
+
+    run_task = asyncio.create_task(
+        runner.run(
+            command=[sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            timeout_seconds=10,
+            on_log=lambda _message, _stream: None,
+            is_cancelled=lambda: False,
+            on_process_started=record_process,
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        run_task.cancel()
+        await asyncio.wait_for(runner.termination_started.wait(), timeout=1)
+        run_task.cancel()
+        runner.allow_termination.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_task
+
+        assert process_holder["process"].returncode is not None
+    finally:
+        runner.allow_termination.set()
+        process = process_holder.get("process")
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()

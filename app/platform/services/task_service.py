@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import threading
 from collections.abc import Callable, Coroutine
@@ -25,6 +26,11 @@ from app.platform.schemas.tasks import (
 )
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
+from app.platform.services.task_execution import (
+    PreparedProcess,
+    TaskPreparationContext,
+    TaskPreparer,
+)
 from app.platform.services.task_store import TaskStore
 from app.platform.services.workspace_service import WorkspaceService
 
@@ -57,6 +63,53 @@ _NATURALCC_OPERATION_GOALS = {
 }
 
 
+class _ProcessTaskControl:
+    """Coordinate cancellation with one task's subprocess launch boundary."""
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        worker_task: asyncio.Task[Any],
+    ) -> None:
+        self._lock = threading.Lock()
+        self._loop = loop
+        self._worker_task = worker_task
+        self._cancel_requested = False
+        self._launching = False
+        self._process: object | None = None
+
+    def request_cancel(self) -> None:
+        with self._lock:
+            self._cancel_requested = True
+            should_cancel_worker = not self._launching or self._process is not None
+        if should_cancel_worker:
+            self._cancel_worker()
+
+    def begin_launch(self, is_cancelled: Callable[[], bool]) -> None:
+        with self._lock:
+            if self._cancel_requested or is_cancelled():
+                raise CancellationRequested()
+            self._launching = True
+
+    def process_started(self, process: asyncio.subprocess.Process) -> None:
+        with self._lock:
+            self._process = process
+            should_cancel_worker = self._cancel_requested
+        if should_cancel_worker:
+            self._cancel_worker()
+
+    def finish_launch(self) -> None:
+        with self._lock:
+            self._launching = False
+            self._process = None
+
+    def _cancel_worker(self) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._worker_task.cancel)
+        except RuntimeError:
+            pass
+
+
 class TaskService:
     def __init__(
         self,
@@ -87,6 +140,8 @@ class TaskService:
         )
         self._background_futures: dict[UUID, Future[None]] = {}
         self._background_lock = threading.Lock()
+        self._process_controls: dict[UUID, _ProcessTaskControl] = {}
+        self._process_controls_lock = threading.Lock()
         self._naturalcc_runs: dict[UUID, str] = {}
         self._naturalcc_runs_lock = threading.Lock()
         self._naturalcc_loop: asyncio.AbstractEventLoop | None = None
@@ -192,6 +247,42 @@ class TaskService:
             metadata=request.metadata,
         )
         self._start_background(task.id, lambda: self._run_schedule_comparison(task.id, request))
+        return task
+
+    async def create_prepared_process_task(
+        self,
+        *,
+        module: BackendModuleName,
+        project_id: UUID,
+        task_type: TaskType,
+        prepare: TaskPreparer,
+        metadata: dict | None = None,
+        timeout_seconds: int | None = None,
+    ) -> TaskRecord:
+        """Create a task whose module prepares a command inside its task workspace."""
+        self._ensure_accepting_tasks()
+        self.workspace_service.require_project(project_id)
+        if not self._is_async_preparer(prepare):
+            raise AppError("prepare must be async")
+        task = self._new_task(
+            module=module,
+            project_id=project_id,
+            task_type=task_type,
+            command=[],
+            metadata=metadata or {},
+        )
+        self._start_background(
+            task.id,
+            lambda: self._run_process_task(
+                task_id=task.id,
+                project_id=project_id,
+                command=None,
+                work_dir=None,
+                timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+                workspace_name="workspace",
+                prepare=prepare,
+            ),
+        )
         return task
 
     async def create_code_generation_task(
@@ -354,6 +445,10 @@ class TaskService:
         cancel_deadline: float | None = None,
     ) -> TaskRecord:
         task, changed = self.task_store.request_cancel_with_transition(task_id)
+        with self._process_controls_lock:
+            process_control = self._process_controls.get(task_id)
+        if task.cancel_requested and process_control is not None:
+            process_control.request_cancel()
         with self._background_lock:
             future = self._background_futures.get(task_id)
         if task.status == TaskStatus.CANCELLED and future is not None:
@@ -443,45 +538,61 @@ class TaskService:
         self,
         task_id: UUID,
         project_id: UUID,
-        command: list[str],
-        work_dir: str,
+        command: list[str] | None,
+        work_dir: str | None,
         timeout_seconds: int,
         source_workspace=None,
         workspace_name: str | None = None,
         executable_relative_path: str | None = None,
+        prepare: TaskPreparer | None = None,
     ) -> None:
         task = self.task_store.try_start(task_id)
         if task is None:
             return
+        worker_task = asyncio.current_task()
+        assert worker_task is not None
+        process_control = _ProcessTaskControl(asyncio.get_running_loop(), worker_task)
+        with self._process_controls_lock:
+            self._process_controls[task_id] = process_control
 
         task_workspace = None
         try:
-            task = self._report_progress(task, 5, f"task started: {command}")
+            task = self._report_progress(
+                task,
+                5,
+                "task preparation started" if prepare is not None else f"task started: {command}",
+            )
             task_workspace = self.workspace_service.create_task_workspace(
                 project_id,
                 task_id,
                 source_path=source_workspace,
                 workspace_name=workspace_name,
             )
-            cwd = self.workspace_service.resolve_work_dir_in_workspace(task_workspace, work_dir)
-            process_command = list(command)
-            if executable_relative_path is not None:
-                process_command[2] = str(
-                    self.workspace_service.resolve_path_in_workspace(
-                        task_workspace, executable_relative_path
+            if prepare is not None:
+                deadline = asyncio.get_running_loop().time() + timeout_seconds
+                async with asyncio.timeout_at(deadline):
+                    task, prepared = await self._prepare_process(task, task_workspace, prepare)
+                    result = await self._run_controlled_process(
+                        task_id=task_id,
+                        task_workspace=task_workspace,
+                        command=list(task.command),
+                        work_dir=prepared.work_dir,
+                        timeout_seconds=timeout_seconds,
+                        executable_relative_path=None,
+                        process_control=process_control,
                     )
+            else:
+                assert command is not None
+                assert work_dir is not None
+                result = await self._run_controlled_process(
+                    task_id=task_id,
+                    task_workspace=task_workspace,
+                    command=list(command),
+                    work_dir=work_dir,
+                    timeout_seconds=timeout_seconds,
+                    executable_relative_path=executable_relative_path,
+                    process_control=process_control,
                 )
-            result = await self.process_runner.run(
-                command=process_command,
-                cwd=cwd,
-                timeout_seconds=timeout_seconds,
-                on_log=lambda message, stream: self.log_service.append(
-                    task_id,
-                    message,
-                    stream=stream,
-                ),
-                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
-            )
             task.finished_at = utc_now()
             task.exit_code = result.exit_code
             task.elapsed_ms = result.elapsed_ms
@@ -499,13 +610,21 @@ class TaskService:
                 task.error = f"command exited with code {result.exit_code}"
         except CancellationRequested:
             self._mark_cancelled(task)
+        except asyncio.CancelledError:
+            self._mark_cancelled(task)
         except TimeoutError as exc:
-            self._mark_failed(task, str(exc))
+            self._mark_failed(
+                task,
+                str(exc) or f"task timed out after {timeout_seconds} seconds",
+            )
         except FileNotFoundError as exc:
             self._mark_failed(task, f"executable not found: {exc.filename}")
         except Exception as exc:
             self._mark_failed(task, str(exc))
         finally:
+            with self._process_controls_lock:
+                if self._process_controls.get(task_id) is process_control:
+                    self._process_controls.pop(task_id, None)
             self._finalize_with_cleanup(
                 task,
                 lambda finalized: (
@@ -516,6 +635,44 @@ class TaskService:
                     else None
                 ),
             )
+
+    async def _run_controlled_process(
+        self,
+        *,
+        task_id: UUID,
+        task_workspace: Path,
+        command: list[str],
+        work_dir: str,
+        timeout_seconds: int,
+        executable_relative_path: str | None,
+        process_control: _ProcessTaskControl,
+    ):
+        cwd = self.workspace_service.resolve_work_dir_in_workspace(task_workspace, work_dir)
+        if executable_relative_path is not None:
+            command[2] = str(
+                self.workspace_service.resolve_path_in_workspace(
+                    task_workspace, executable_relative_path
+                )
+            )
+        def is_cancelled() -> bool:
+            return self.task_store.require(task_id).cancel_requested
+
+        process_control.begin_launch(is_cancelled)
+        try:
+            return await self.process_runner.run(
+                command=command,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                on_log=lambda message, stream: self.log_service.append(
+                    task_id,
+                    message,
+                    stream=stream,
+                ),
+                is_cancelled=is_cancelled,
+                on_process_started=process_control.process_started,
+            )
+        finally:
+            process_control.finish_launch()
 
     async def _run_code_generation_task(
         self,
@@ -644,6 +801,56 @@ class TaskService:
                 self._naturalcc_run_id(task_id) is not None
             ):
                 self._schedule_naturalcc_cleanup_retry(task_id)
+
+    async def _prepare_process(
+        self,
+        task: TaskRecord,
+        workspace: Path,
+        prepare: TaskPreparer,
+    ) -> tuple[TaskRecord, PreparedProcess]:
+        self._raise_if_cancel_requested(task.id)
+
+        def report_progress(percent: int, message: str) -> None:
+            nonlocal task
+            task = self._report_progress(task, percent, message, stream="module.prepare")
+
+        context = TaskPreparationContext(
+            task_id=task.id,
+            project_id=task.project_id,
+            workspace=workspace,
+            _append_log=lambda message, stream: self.log_service.append(
+                task.id,
+                message,
+                stream=stream,
+            ),
+            _report_progress=report_progress,
+            _is_cancelled=lambda: self.task_store.require(task.id).cancel_requested,
+        )
+        prepared = await prepare(context)
+        self._raise_if_cancel_requested(task.id)
+        self._validate_prepared_process(prepared)
+        updated = self.task_store.update_command_if_running(task.id, prepared.command)
+        if updated is None:
+            raise CancellationRequested()
+        self._raise_if_cancel_requested(task.id)
+        return updated, prepared
+
+    @staticmethod
+    def _validate_prepared_process(prepared: object) -> None:
+        if not isinstance(prepared, PreparedProcess):
+            raise AppError("prepare must return PreparedProcess")
+        if not prepared.command or not all(
+            isinstance(item, str) and item for item in prepared.command
+        ):
+            raise AppError("prepared command must contain non-empty strings")
+        if not isinstance(prepared.work_dir, str):
+            raise AppError("prepared work_dir must be a string")
+
+    @staticmethod
+    def _is_async_preparer(prepare: TaskPreparer) -> bool:
+        return inspect.iscoroutinefunction(prepare) or (
+            callable(prepare) and inspect.iscoroutinefunction(prepare.__call__)
+        )
 
     async def _run_schedule_experiment(
         self,

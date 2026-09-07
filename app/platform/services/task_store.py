@@ -242,6 +242,28 @@ class TaskStore:
             self._tasks[task_id] = latest
             return latest
 
+    def update_command_if_running(self, task_id: UUID, command: list[str]) -> TaskRecord | None:
+        """Persist a prepared command only while its worker still owns an active task."""
+        with self._lock, self._connection:
+            self._ensure_open()
+            cursor = self._connection.execute(
+                """
+                UPDATE tasks
+                SET command_json = ?, revision = revision + 1
+                WHERE id = ? AND status = ? AND cancel_requested = 0
+                """,
+                (
+                    self._json(command),
+                    str(task_id),
+                    TaskStatus.RUNNING.value,
+                ),
+            )
+            latest = self._load(task_id)
+            if latest is None:
+                raise NotFoundError(f"task not found: {task_id}")
+            self._tasks[task_id] = latest
+            return latest if cursor.rowcount == 1 else None
+
     def merge_metadata(self, task_id: UUID, updates: dict[str, object]) -> TaskRecord:
         """Atomically merge adapter-owned metadata without saving a stale TaskRecord."""
         with self._lock, self._connection:
