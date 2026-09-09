@@ -27,3 +27,14 @@ class DependencyRepairResponse(BaseModel):
     repaired_content: str
 
     note: str
+
+from pydantic import BaseModel, Field
+
+
+class DependencyRepairBuildRequest(BaseModel):
+    project_id: UUID
+    target: str | None = None
+    timeout_seconds: int | None = Field(
+        default=None,
+        ge=1,
+    )

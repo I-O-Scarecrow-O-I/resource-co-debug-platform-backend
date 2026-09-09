@@ -4,12 +4,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from app.modules.co_debug.schemas.debug import DebugSessionResponse
-from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse
+from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse,DependencyRepairBuildRequest,DependencyRepairResponse
 from app.modules.co_debug.services.debug_service import DebugSessionService
-from app.modules.co_debug.services.dependency_service import DependencyAnalysisService, DependencyRepairResponse
+from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
-from app.platform.api.deps import get_debug_service, get_dependency_service, get_metric_service
+from app.modules.co_debug.services.repair_build_service import DependencyRepairBuildService
+from app.platform.api.deps import get_debug_service, get_dependency_service, get_dependency_repair_build_service,get_metric_service
 from app.platform.schemas.common import ApiResponse
+from app.platform.schemas.tasks import TaskResponse
 
 router = APIRouter()
 
@@ -20,6 +22,28 @@ async def analyze_dependencies(
     dependency_service: Annotated[DependencyAnalysisService, Depends(get_dependency_service)],
 ) -> ApiResponse[DependencyAnalysisResponse]:
     return ApiResponse.ok(dependency_service.analyze(project_id))
+
+@router.post(
+    "/dependencies/repair-build",
+    response_model=ApiResponse[TaskResponse],
+)
+async def repair_and_build_dependencies(
+    request: DependencyRepairBuildRequest,
+    service: Annotated[
+        DependencyRepairBuildService,
+        Depends(
+            get_dependency_repair_build_service
+        ),
+    ],
+) -> ApiResponse[TaskResponse]:
+
+    task = await service.create_task(
+        request
+    )
+
+    return ApiResponse.ok(
+        TaskResponse.from_record(task)
+    )
 
 @router.post(
     "/dependencies/repair",

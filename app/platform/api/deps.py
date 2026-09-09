@@ -9,6 +9,9 @@ from app.core.config import Settings
 from app.core.config import get_settings as load_settings
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.repair_build_service import (
+    DependencyRepairBuildService,
+)
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
 from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
@@ -161,3 +164,9 @@ def get_dependency_service() -> DependencyAnalysisService:
 @lru_cache
 def get_debug_service() -> DebugSessionService:
     return DebugSessionService(task_store=get_task_store())
+
+def get_dependency_repair_build_service(
+) -> DependencyRepairBuildService:
+    return DependencyRepairBuildService(
+        task_service=get_task_service(),
+    )
