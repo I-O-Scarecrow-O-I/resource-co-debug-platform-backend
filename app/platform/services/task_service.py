@@ -1,7 +1,9 @@
 import asyncio
 import inspect
+import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -10,23 +12,15 @@ from uuid import UUID, uuid4
 
 from app.core.errors import AppError, CancellationRequested
 from app.core.time import utc_now
-from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
-from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
-from app.modules.co_debug.services.scheduler_service import SchedulerService
-from app.modules.code_generation.client import NaturalCCClientError, NaturalCCCreateError
-from app.modules.code_generation.schemas import CodeGenerationTaskRequest, NaturalCCRunRequest
-from app.modules.code_generation.service import NaturalCCService
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
-from app.platform.schemas.tasks import (
-    BuildTaskRequest,
-    DebugTaskRequest,
-    ScheduleComparisonRequest,
-    ScheduleExperimentRequest,
-)
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_execution import (
+    ManagedTaskCancellationHandler,
+    ManagedTaskContext,
+    ManagedTaskExecutor,
+    ManagedTaskResult,
     PreparedProcess,
     TaskPreparationContext,
     TaskPreparer,
@@ -36,31 +30,8 @@ from app.platform.services.workspace_service import WorkspaceService
 
 logger = logging.getLogger(__name__)
 
-_NATURALCC_EVENT_PROGRESS = {
-    "run.started": 10,
-    "model.requested": 20,
-    "model.responded": 35,
-    "tool.started": 55,
-    "tool.finished": 70,
-    "verification.finished": 85,
-    "run.completed": 95,
-}
-_NATURALCC_TERMINAL_STATUSES = {
-    "completed",
-    "failed",
-    "budget_exhausted",
-    "cancelled",
-    "unsupported",
-}
-_NATURALCC_CANCEL_TIMEOUT_SECONDS = 2.0
-_NATURALCC_CANCEL_ATTEMPTS = 3
-_NATURALCC_CLEANUP_RETRY_ATTEMPTS = 3
-_NATURALCC_CLEANUP_RETRY_SECONDS = 0.1
-_NATURALCC_OPERATION_GOALS = {
-    "completion": "Complete the requested code change.",
-    "repair": "Repair the reported code issue.",
-    "refactor": "Refactor the requested code while preserving behavior.",
-}
+_MANAGED_WORKSPACE_CLEANUP_ATTEMPTS = 3
+_MANAGED_WORKSPACE_CLEANUP_RETRY_SECONDS = 0.01
 
 
 class _ProcessTaskControl:
@@ -117,23 +88,13 @@ class TaskService:
         task_store: TaskStore,
         log_service: TaskLogService,
         process_runner: ProcessRunner,
-        scheduler_service: SchedulerService,
-        schedule_execution_service: ScheduleExecutionService,
-        schedule_comparison_service: ScheduleComparisonService,
         default_timeout_seconds: int,
-        naturalcc_service: NaturalCCService | None = None,
-        naturalcc_approve_execute: bool = False,
     ) -> None:
         self.workspace_service = workspace_service
         self.task_store = task_store
         self.log_service = log_service
         self.process_runner = process_runner
-        self.scheduler_service = scheduler_service
-        self.schedule_execution_service = schedule_execution_service
-        self.schedule_comparison_service = schedule_comparison_service
         self.default_timeout_seconds = default_timeout_seconds
-        self.naturalcc_service = naturalcc_service
-        self.naturalcc_approve_execute = naturalcc_approve_execute
         self._background_executor = ThreadPoolExecutor(
             max_workers=8,
             thread_name_prefix="backend-task",
@@ -142,111 +103,47 @@ class TaskService:
         self._background_lock = threading.Lock()
         self._process_controls: dict[UUID, _ProcessTaskControl] = {}
         self._process_controls_lock = threading.Lock()
-        self._naturalcc_runs: dict[UUID, str] = {}
-        self._naturalcc_runs_lock = threading.Lock()
-        self._naturalcc_loop: asyncio.AbstractEventLoop | None = None
-        self._naturalcc_cleanup_retries: dict[UUID, asyncio.Task[None]] = {}
-        self._naturalcc_cleanup_retries_lock = threading.Lock()
+        self._managed_cancellation_handlers: dict[
+            UUID,
+            ManagedTaskCancellationHandler,
+        ] = {}
+        self._managed_cancellation_handlers_lock = threading.Lock()
         self._lifecycle_lock = threading.RLock()
         self._lifecycle_state = "RUNNING"
 
-    async def create_build_task(self, request: BuildTaskRequest) -> TaskRecord:
+    async def create_process_task(
+        self,
+        *,
+        module: BackendModuleName,
+        project_id: UUID,
+        task_type: TaskType,
+        command: list[str],
+        work_dir: str = ".",
+        timeout_seconds: int | None = None,
+        metadata: dict | None = None,
+        artifacts_on_success: bool = False,
+    ) -> TaskRecord:
         self._ensure_accepting_tasks()
-        self.workspace_service.require_project(request.project_id)
+        self.workspace_service.require_project(project_id)
         task = self._new_task(
-            module=request.module,
-            project_id=request.project_id,
-            task_type=TaskType.BUILD,
-            command=request.command,
-            metadata=request.metadata,
-        )
-        self._start_background(
-            task.id,
-            lambda: self._run_process_task(
-                task_id=task.id,
-                project_id=request.project_id,
-                command=request.command,
-                work_dir=request.work_dir,
-                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
-                workspace_name="workspace",
-            )
-        )
-        return task
-
-    async def create_debug_task(self, request: DebugTaskRequest) -> TaskRecord:
-        self._ensure_accepting_tasks()
-        project = self.workspace_service.require_project(request.project_id)
-        source_workspace = None
-        if request.build_task_id is not None:
-            build_task = self.task_store.require(request.build_task_id)
-            if (
-                build_task.project_id != request.project_id
-                or build_task.task_type != TaskType.BUILD
-            ):
-                raise AppError("build_task_id must reference a build task in the same project")
-            if build_task.status != TaskStatus.SUCCEEDED:
-                raise AppError("build task must succeed before starting debug")
-            source_workspace = self.workspace_service.resolve_task_workspace(
-                request.project_id, request.build_task_id
-            )
-            executable = self.workspace_service.resolve_path_in_workspace(
-                source_workspace, request.executable_path
-            )
-            source_root = source_workspace.resolve()
-        else:
-            executable = self.workspace_service.resolve_project_path(
-                request.project_id, request.executable_path
-            )
-            source_root = project.source_path.resolve()
-        if not executable.is_file():
-            raise AppError(f"debug executable does not exist: {request.executable_path}")
-        executable_relative_path = executable.relative_to(source_root)
-        command = ["gdb", "--interpreter=mi2", str(executable_relative_path), *request.args]
-        task = self._new_task(
-            module=request.module,
-            project_id=request.project_id,
-            task_type=TaskType.DEBUG,
+            module=module,
+            project_id=project_id,
+            task_type=task_type,
             command=command,
-            metadata=request.metadata,
+            metadata=metadata or {},
         )
         self._start_background(
             task.id,
             lambda: self._run_process_task(
                 task_id=task.id,
-                project_id=request.project_id,
+                project_id=project_id,
                 command=command,
-                work_dir=request.work_dir,
-                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
-                source_workspace=source_workspace,
-                executable_relative_path=str(executable_relative_path),
-            )
+                work_dir=work_dir,
+                timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+                workspace_name="workspace",
+                artifacts_on_success=artifacts_on_success,
+            ),
         )
-        return task
-
-    async def create_schedule_experiment(self, request: ScheduleExperimentRequest) -> TaskRecord:
-        self._ensure_accepting_tasks()
-        self.workspace_service.require_project(request.project_id)
-        task = self._new_task(
-            module=request.module,
-            project_id=request.project_id,
-            task_type=TaskType.SCHEDULE_EXPERIMENT,
-            command=["app.modules.co_debug.scheduler.scheduler.plan_tasks"],
-            metadata=request.metadata,
-        )
-        self._start_background(task.id, lambda: self._run_schedule_experiment(task.id, request))
-        return task
-
-    async def create_schedule_comparison(self, request: ScheduleComparisonRequest) -> TaskRecord:
-        self._ensure_accepting_tasks()
-        self.workspace_service.require_project(request.project_id)
-        task = self._new_task(
-            module=request.module,
-            project_id=request.project_id,
-            task_type=TaskType.SCHEDULE_COMPARISON,
-            command=["app.modules.co_debug.services.schedule_comparison_service.compare"],
-            metadata=request.metadata,
-        )
-        self._start_background(task.id, lambda: self._run_schedule_comparison(task.id, request))
         return task
 
     async def create_prepared_process_task(
@@ -258,17 +155,20 @@ class TaskService:
         prepare: TaskPreparer,
         metadata: dict | None = None,
         timeout_seconds: int | None = None,
+        source_task_id: UUID | None = None,
+        initial_command: list[str] | None = None,
+        artifacts_on_success: bool = False,
     ) -> TaskRecord:
         """Create a task whose module prepares a command inside its task workspace."""
         self._ensure_accepting_tasks()
-        self.workspace_service.require_project(project_id)
+        source_workspace = self._resolve_process_source_workspace(project_id, source_task_id)
         if not self._is_async_preparer(prepare):
             raise AppError("prepare must be async")
         task = self._new_task(
             module=module,
             project_id=project_id,
             task_type=task_type,
-            command=[],
+            command=list(initial_command or []),
             metadata=metadata or {},
         )
         self._start_background(
@@ -279,33 +179,73 @@ class TaskService:
                 command=None,
                 work_dir=None,
                 timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+                source_workspace=source_workspace,
                 workspace_name="workspace",
                 prepare=prepare,
+                artifacts_on_success=artifacts_on_success,
             ),
         )
         return task
 
-    async def create_code_generation_task(
+    async def create_managed_task(
         self,
-        request: CodeGenerationTaskRequest,
+        *,
+        module: BackendModuleName,
+        project_id: UUID,
+        task_type: TaskType,
+        command: list[str],
+        execute: ManagedTaskExecutor,
+        metadata: dict | None = None,
+        timeout_seconds: int | None = None,
+        total_timeout_seconds: int | float | None = None,
+        cancellation_handler: ManagedTaskCancellationHandler | None = None,
+        preserve_workspace_on_success: bool = False,
+        workspace_completion_metadata_on_success: dict[str, object] | None = None,
+        artifacts_on_success: bool = False,
     ) -> TaskRecord:
+        """Run module orchestration with an operation timeout and optional total deadline.
+
+        ``timeout_seconds`` is exposed to the module for individual operations.
+        ``total_timeout_seconds`` bounds the complete executor only when provided.
+        """
         self._ensure_accepting_tasks()
-        self.workspace_service.require_project(request.project_id)
+        self.workspace_service.require_project(project_id)
+        if not self._is_async_executor(execute):
+            raise AppError("execute must be async")
+        if cancellation_handler is not None and not self._is_async_cancellation_handler(
+            cancellation_handler
+        ):
+            raise AppError("cancellation_handler must be async")
+        resolved_timeout = timeout_seconds or self.default_timeout_seconds
         task = self._new_task(
-            module=BackendModuleName.CODE_GENERATION,
-            project_id=request.project_id,
-            task_type={
-                "completion": TaskType.CODE_GENERATION,
-                "repair": TaskType.CODE_REPAIR,
-                "refactor": TaskType.CODE_REFACTOR,
-            }[request.operation.value],
-            command=["naturalcc", request.operation.value],
-            metadata={},
+            module=module,
+            project_id=project_id,
+            task_type=task_type,
+            command=command,
+            metadata=metadata or {},
         )
-        self._start_background(
-            task.id,
-            lambda: self._run_code_generation_task(task.id, request),
-        )
+        if cancellation_handler is not None:
+            with self._managed_cancellation_handlers_lock:
+                self._managed_cancellation_handlers[task.id] = cancellation_handler
+        try:
+            self._start_background(
+                task.id,
+                lambda: self._run_managed_task(
+                    task_id=task.id,
+                    project_id=project_id,
+                    execute=execute,
+                    timeout_seconds=resolved_timeout,
+                    total_timeout_seconds=total_timeout_seconds,
+                    preserve_workspace_on_success=preserve_workspace_on_success,
+                    workspace_completion_metadata_on_success=(
+                        workspace_completion_metadata_on_success
+                    ),
+                    artifacts_on_success=artifacts_on_success,
+                ),
+            )
+        except Exception:
+            self._unregister_managed_cancellation_handler(task.id)
+            raise
         return task
 
     def list_tasks(self) -> list[TaskRecord]:
@@ -313,6 +253,54 @@ class TaskService:
 
     def require_task(self, task_id: UUID) -> TaskRecord:
         return self.task_store.require(task_id)
+
+    def merge_task_metadata(
+        self,
+        task_id: UUID,
+        updates: dict[str, object],
+    ) -> TaskRecord:
+        self.task_store.require(task_id)
+        return self.task_store.merge_metadata(task_id, updates)
+
+    def hold_task_workspaces(
+        self,
+        task_id: UUID,
+        metadata_updates: dict[str, object] | None = None,
+    ) -> None:
+        self.task_store.hold_workspaces(task_id, metadata_updates)
+
+    def release_task_workspaces(
+        self,
+        task_id: UUID,
+        *,
+        cleanup: bool = False,
+        completion_metadata: dict[str, object] | None = None,
+    ) -> None:
+        task = self.task_store.require(task_id)
+        if cleanup:
+            self.task_store.queue_workspace_cleanup_and_release_hold(
+                task_id,
+                completion_metadata,
+            )
+            self._cleanup_managed_task_workspaces(task.project_id, task_id)
+        else:
+            self.task_store.release_workspaces(task_id, completion_metadata)
+
+    def find_process_source_file(
+        self,
+        *,
+        project_id: UUID,
+        path: str,
+        source_task_id: UUID | None = None,
+    ) -> str | None:
+        source_workspace = self._resolve_process_source_workspace(project_id, source_task_id)
+        source_root = (
+            source_workspace.resolve()
+            if source_workspace is not None
+            else self.workspace_service.require_project(project_id).source_path.resolve()
+        )
+        resolved = self.workspace_service.resolve_path_in_workspace(source_root, path)
+        return str(resolved.relative_to(source_root)) if resolved.is_file() else None
 
     def list_task_artifacts(self, task_id: UUID) -> list[tuple[str, int]]:
         task = self._require_succeeded_artifact_task(task_id)
@@ -330,30 +318,43 @@ class TaskService:
         with self._lifecycle_lock:
             if self._lifecycle_state != "RUNNING":
                 raise AppError("task service is not accepting tasks")
-            self._naturalcc_loop = asyncio.get_running_loop()
             recovered = self.task_store.recover_interrupted_tasks()
-        pending_cleanup_tasks = [
-            task
-            for task in self.task_store.list()
-            if self._naturalcc_cleanup_pending(task)
-        ]
-        if pending_cleanup_tasks:
-            recovered_cleanup = await asyncio.gather(
-                *(self._recover_naturalcc_cleanup(task) for task in pending_cleanup_tasks),
+
+        try:
+            managed_cleanup_task_ids = self.task_store.list_workspace_cleanup_pending()
+        except Exception:
+            managed_cleanup_task_ids = []
+            logger.warning("failed to list managed workspace cleanup queue", exc_info=True)
+        if managed_cleanup_task_ids:
+            cleanup_results = await asyncio.gather(
+                *(
+                    asyncio.to_thread(self._recover_managed_task_workspace, task_id)
+                    for task_id in managed_cleanup_task_ids
+                ),
                 return_exceptions=True,
             )
-            for task, cleaned in zip(pending_cleanup_tasks, recovered_cleanup, strict=True):
-                if cleaned is False and self._naturalcc_run_id(task.id) is not None:
-                    self._schedule_naturalcc_cleanup_retry(task.id)
+            for task_id, cleanup_result in zip(
+                managed_cleanup_task_ids,
+                cleanup_results,
+                strict=True,
+            ):
+                if isinstance(cleanup_result, BaseException):
+                    logger.warning(
+                        "failed to recover managed task workspace %s",
+                        task_id,
+                        exc_info=(
+                            type(cleanup_result),
+                            cleanup_result,
+                            cleanup_result.__traceback__,
+                        ),
+                    )
 
         for task in recovered:
             try:
                 self._log_final_state(task)
             except Exception:
                 logger.warning("failed to log recovered task %s", task.id, exc_info=True)
-            if self.workspace_service is None or self._naturalcc_cleanup_pending(
-                self.task_store.require(task.id)
-            ):
+            if self.workspace_service is None or self._task_workspaces_are_held(task.id):
                 continue
             try:
                 self.workspace_service.cleanup_task_workspaces(task.project_id, task.id)
@@ -397,46 +398,34 @@ class TaskService:
                     break
                 await asyncio.sleep(0.05)
         finally:
-            try:
-                await self._stop_naturalcc_cleanup_retries()
-                self._background_executor.shutdown(wait=False, cancel_futures=True)
-            finally:
-                with self._lifecycle_lock:
-                    self._naturalcc_loop = None
-                    self._lifecycle_state = "CLOSED"
+            self._background_executor.shutdown(wait=False, cancel_futures=True)
+            with self._lifecycle_lock:
+                self._lifecycle_state = "CLOSED"
 
     def close_resources_when_idle(self) -> None:
         """Close persistent resources immediately or after timed-out workers finish."""
         with self._background_lock:
             futures = list(self._background_futures.values())
-        with self._naturalcc_cleanup_retries_lock:
-            retries = list(self._naturalcc_cleanup_retries.values())
-        if not futures and not retries:
+        if not futures:
             self.task_store.close()
             self.log_service.close()
             return
 
         def close_when_done(_: object) -> None:
-            with self._background_lock, self._naturalcc_cleanup_retries_lock:
-                if self._background_futures or self._naturalcc_cleanup_retries:
+            with self._background_lock:
+                if self._background_futures:
                     return
             self.task_store.close()
             self.log_service.close()
 
         for future in futures:
             future.add_done_callback(close_when_done)
-        for retry in retries:
-            retry.add_done_callback(close_when_done)
 
     def can_close_resources(self) -> bool:
-        with (
-            self._lifecycle_lock,
-            self._background_lock,
-            self._naturalcc_cleanup_retries_lock,
-        ):
+        with self._lifecycle_lock, self._background_lock:
             return self._lifecycle_state == "CLOSED" and all(
                 future.done() for future in self._background_futures.values()
-            ) and not self._naturalcc_cleanup_retries
+            )
 
     async def cancel_task(
         self,
@@ -445,6 +434,8 @@ class TaskService:
         cancel_deadline: float | None = None,
     ) -> TaskRecord:
         task, changed = self.task_store.request_cancel_with_transition(task_id)
+        with self._managed_cancellation_handlers_lock:
+            cancellation_handler = self._managed_cancellation_handlers.get(task_id)
         with self._process_controls_lock:
             process_control = self._process_controls.get(task_id)
         if task.cancel_requested and process_control is not None:
@@ -454,7 +445,20 @@ class TaskService:
         if task.status == TaskStatus.CANCELLED and future is not None:
             future.cancel()
         if task.cancel_requested:
-            await self._cancel_naturalcc_run(task_id, deadline=cancel_deadline)
+            if cancellation_handler is not None:
+                try:
+                    await cancellation_handler(task_id, cancel_deadline)
+                except Exception:
+                    logger.warning(
+                        "managed task cancellation handler failed: %s",
+                        task_id,
+                        exc_info=True,
+                    )
+                except asyncio.CancelledError:
+                    logger.warning(
+                        "managed task cancellation handler was cancelled: %s",
+                        task_id,
+                    )
         if changed:
             try:
                 if task.status == TaskStatus.CANCELLED:
@@ -488,15 +492,10 @@ class TaskService:
 
     def _require_succeeded_artifact_task(self, task_id: UUID) -> TaskRecord:
         task = self.require_task(task_id)
-        if task.task_type not in {
-            TaskType.BUILD,
-            TaskType.CODE_GENERATION,
-            TaskType.CODE_REPAIR,
-            TaskType.CODE_REFACTOR,
-        }:
-            raise AppError("artifacts are only available for build and code generation tasks")
         if task.status != TaskStatus.SUCCEEDED:
             raise AppError("artifacts are only available for succeeded tasks")
+        if not self.task_store.artifacts_are_available(task_id):
+            raise AppError("artifacts are not available for this task")
         return task
 
     def _start_background(
@@ -527,12 +526,251 @@ class TaskService:
         with self._background_lock:
             if self._background_futures.get(task_id) is future:
                 self._background_futures.pop(task_id, None)
+        self._unregister_managed_cancellation_handler(task_id)
         if not future.cancelled() and (exception := future.exception()) is not None:
             logger.error(
                 "background task failed: %s",
                 task_id,
                 exc_info=(type(exception), exception, exception.__traceback__),
             )
+
+    def _unregister_managed_cancellation_handler(self, task_id: UUID) -> None:
+        with self._managed_cancellation_handlers_lock:
+            self._managed_cancellation_handlers.pop(task_id, None)
+
+    async def _run_managed_task(
+        self,
+        *,
+        task_id: UUID,
+        project_id: UUID,
+        execute: ManagedTaskExecutor,
+        timeout_seconds: int,
+        total_timeout_seconds: int | float | None,
+        preserve_workspace_on_success: bool,
+        workspace_completion_metadata_on_success: dict[str, object] | None,
+        artifacts_on_success: bool,
+    ) -> None:
+        task = self.task_store.try_start(task_id)
+        if task is None:
+            return
+
+        def report_progress(percent: int, message: str, stream: str) -> None:
+            nonlocal task
+            task = self._report_progress(task, percent, message, stream=stream)
+
+        def create_workspace(workspace_name: str | None) -> Path:
+            self._raise_if_cancel_requested(task_id)
+            return self.workspace_service.create_task_workspace(
+                project_id,
+                task_id,
+                workspace_name=workspace_name,
+            )
+
+        context = ManagedTaskContext(
+            task_id=task_id,
+            project_id=project_id,
+            timeout_seconds=timeout_seconds,
+            _append_log=lambda message, stream, progress: self.log_service.append(
+                task_id,
+                message,
+                stream=stream,
+                progress=progress,
+            ),
+            _report_progress=report_progress,
+            _is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
+            _create_workspace=create_workspace,
+            _resolve_path=self.workspace_service.resolve_path_in_workspace,
+            _merge_metadata=lambda updates: self.merge_task_metadata(task_id, updates),
+            _hold_workspaces=lambda metadata_updates: self.hold_task_workspaces(
+                task_id,
+                metadata_updates,
+            ),
+            _release_workspaces=lambda cleanup, completion_metadata: (
+                self.release_task_workspaces(
+                    task_id,
+                    cleanup=cleanup,
+                    completion_metadata=completion_metadata,
+                )
+            ),
+        )
+        try:
+            self._raise_if_cancel_requested(task_id)
+            if total_timeout_seconds is None:
+                managed_result = await execute(context)
+            else:
+                async with asyncio.timeout(total_timeout_seconds):
+                    managed_result = await execute(context)
+            self._raise_if_cancel_requested(task_id)
+            self._validate_managed_task_result(managed_result)
+            task.status = managed_result.status
+            task.result = dict(managed_result.result)
+            task.exit_code = managed_result.exit_code
+            task.elapsed_ms = managed_result.elapsed_ms
+            task.error = managed_result.error
+            task.finished_at = utc_now()
+            if task.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                task.progress = 100
+            else:
+                task.error = task.error or "cancelled"
+        except (CancellationRequested, asyncio.CancelledError):
+            self._mark_cancelled(task)
+        except TimeoutError as exc:
+            error = (
+                str(exc)
+                if total_timeout_seconds is None
+                else f"managed task timed out after {total_timeout_seconds} seconds"
+            )
+            self._mark_failed(task, error)
+            task.progress = 100
+        except Exception as exc:
+            self._mark_failed(task, str(exc))
+            task.progress = 100
+        finally:
+            self._finalize_with_cleanup(
+                task,
+                lambda finalized: self._finish_managed_task_workspaces(
+                    finalized=finalized,
+                    project_id=project_id,
+                    task_id=task_id,
+                    preserve_workspace_on_success=preserve_workspace_on_success,
+                    workspace_completion_metadata_on_success=(
+                        workspace_completion_metadata_on_success
+                    ),
+                ),
+                artifacts_on_success=artifacts_on_success,
+                queue_workspace_cleanup_on_finalize=True,
+                preserve_workspace_on_success=preserve_workspace_on_success,
+            )
+
+    @staticmethod
+    def _validate_managed_task_result(result: object) -> None:
+        if not isinstance(result, ManagedTaskResult):
+            raise AppError("execute must return ManagedTaskResult")
+        if not isinstance(result.status, TaskStatus) or result.status not in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }:
+            raise AppError("managed task result must have a terminal status")
+        if not isinstance(result.result, dict):
+            raise AppError("managed task result must be a dict")
+        try:
+            json.dumps(
+                result.result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise AppError("managed task result must be JSON serializable") from exc
+        if result.exit_code is not None and type(result.exit_code) is not int:
+            raise AppError("managed task exit_code must be an int or None")
+        if result.elapsed_ms is not None and (
+            type(result.elapsed_ms) is not int or result.elapsed_ms < 0
+        ):
+            raise AppError("managed task elapsed_ms must be a non-negative int or None")
+        if result.error is not None and not isinstance(result.error, str):
+            raise AppError("managed task error must be a string or None")
+
+    def _finish_managed_task_workspaces(
+        self,
+        *,
+        finalized: TaskRecord | None,
+        project_id: UUID,
+        task_id: UUID,
+        preserve_workspace_on_success: bool,
+        workspace_completion_metadata_on_success: dict[str, object] | None,
+    ) -> None:
+        if finalized is None:
+            return
+        if (
+            finalized.status == TaskStatus.SUCCEEDED
+            and preserve_workspace_on_success
+        ):
+            try:
+                self.release_task_workspaces(
+                    task_id,
+                    completion_metadata=workspace_completion_metadata_on_success,
+                )
+            except Exception:
+                logger.warning(
+                    "failed to release managed workspace hold %s",
+                    task_id,
+                    exc_info=True,
+                )
+            return
+        if self._task_workspaces_are_held(task_id):
+            return
+        try:
+            cleanup_is_pending = (
+                task_id in self.task_store.list_workspace_cleanup_pending()
+            )
+        except Exception:
+            logger.warning(
+                "failed to read managed workspace cleanup state %s; skipping cleanup",
+                task_id,
+                exc_info=True,
+            )
+            return
+        if not cleanup_is_pending:
+            logger.warning(
+                "managed workspace cleanup intent is missing for task %s; skipping cleanup",
+                task_id,
+            )
+            return
+        self._cleanup_managed_task_workspaces(project_id, task_id)
+
+    def _cleanup_managed_task_workspaces(self, project_id: UUID, task_id: UUID) -> None:
+        if self._task_workspaces_are_held(task_id):
+            return
+        for attempt in range(_MANAGED_WORKSPACE_CLEANUP_ATTEMPTS):
+            try:
+                self.workspace_service.cleanup_task_workspaces(project_id, task_id)
+            except Exception:
+                if attempt + 1 < _MANAGED_WORKSPACE_CLEANUP_ATTEMPTS:
+                    time.sleep(_MANAGED_WORKSPACE_CLEANUP_RETRY_SECONDS)
+                    continue
+                logger.warning(
+                    "failed to clean managed task workspace %s",
+                    task_id,
+                    exc_info=True,
+                )
+                self._mark_managed_workspace_cleanup_pending(task_id)
+                return
+            try:
+                self.task_store.complete_workspace_cleanup(task_id)
+            except Exception:
+                logger.warning(
+                    "failed to complete managed workspace cleanup state %s",
+                    task_id,
+                    exc_info=True,
+                )
+            return
+
+    def _mark_managed_workspace_cleanup_pending(self, task_id: UUID) -> None:
+        try:
+            self.task_store.mark_workspace_cleanup_pending(task_id)
+        except Exception:
+            logger.warning(
+                "failed to persist managed workspace cleanup state %s",
+                task_id,
+                exc_info=True,
+            )
+
+    def _recover_managed_task_workspace(self, task_id: UUID) -> None:
+        task = self.task_store.require(task_id)
+        self._cleanup_managed_task_workspaces(task.project_id, task.id)
+
+    def _task_workspaces_are_held(self, task_id: UUID) -> bool:
+        try:
+            return self.task_store.workspaces_are_held(task_id)
+        except Exception:
+            logger.warning(
+                "failed to read managed workspace hold state %s; skipping cleanup",
+                task_id,
+                exc_info=True,
+            )
+            return True
 
     async def _run_process_task(
         self,
@@ -543,8 +781,8 @@ class TaskService:
         timeout_seconds: int,
         source_workspace=None,
         workspace_name: str | None = None,
-        executable_relative_path: str | None = None,
         prepare: TaskPreparer | None = None,
+        artifacts_on_success: bool = False,
     ) -> None:
         task = self.task_store.try_start(task_id)
         if task is None:
@@ -575,10 +813,9 @@ class TaskService:
                     result = await self._run_controlled_process(
                         task_id=task_id,
                         task_workspace=task_workspace,
-                        command=list(task.command),
+                        command=list(prepared.command),
                         work_dir=prepared.work_dir,
                         timeout_seconds=timeout_seconds,
-                        executable_relative_path=None,
                         process_control=process_control,
                     )
             else:
@@ -590,7 +827,6 @@ class TaskService:
                     command=list(command),
                     work_dir=work_dir,
                     timeout_seconds=timeout_seconds,
-                    executable_relative_path=executable_relative_path,
                     process_control=process_control,
                 )
             task.finished_at = utc_now()
@@ -600,7 +836,7 @@ class TaskService:
             if result.exit_code == 0:
                 task.status = TaskStatus.SUCCEEDED
                 task.result = {"success": True}
-                if task.task_type == TaskType.BUILD:
+                if artifacts_on_success:
                     task.result["artifact"] = {
                         "build_task_id": str(task.id),
                         "workspace": "workspace",
@@ -630,10 +866,11 @@ class TaskService:
                 lambda finalized: (
                     self.workspace_service.cleanup_task_workspaces(project_id, task_id)
                     if finalized is None
-                    or finalized.task_type != TaskType.BUILD
+                    or not artifacts_on_success
                     or finalized.status != TaskStatus.SUCCEEDED
                     else None
                 ),
+                artifacts_on_success=artifacts_on_success,
             )
 
     async def _run_controlled_process(
@@ -644,16 +881,9 @@ class TaskService:
         command: list[str],
         work_dir: str,
         timeout_seconds: int,
-        executable_relative_path: str | None,
         process_control: _ProcessTaskControl,
     ):
         cwd = self.workspace_service.resolve_work_dir_in_workspace(task_workspace, work_dir)
-        if executable_relative_path is not None:
-            command[2] = str(
-                self.workspace_service.resolve_path_in_workspace(
-                    task_workspace, executable_relative_path
-                )
-            )
         def is_cancelled() -> bool:
             return self.task_store.require(task_id).cancel_requested
 
@@ -673,134 +903,6 @@ class TaskService:
             )
         finally:
             process_control.finish_launch()
-
-    async def _run_code_generation_task(
-        self,
-        task_id: UUID,
-        request: CodeGenerationTaskRequest,
-    ) -> None:
-        task = self.task_store.try_start(task_id)
-        if task is None:
-            return
-
-        timeout_seconds = request.timeout_seconds or self.default_timeout_seconds
-        remote_run_id: str | None = None
-        create_outcome_unknown = False
-        remote_run_created = False
-        try:
-            if self.naturalcc_service is None:
-                raise AppError("NaturalCC service is not configured")
-            task_workspace = self.workspace_service.create_task_workspace(
-                request.project_id,
-                task_id,
-                workspace_name="workspace",
-            )
-            for target_file in request.target_files:
-                target = self.workspace_service.resolve_path_in_workspace(
-                    task_workspace,
-                    target_file,
-                )
-                if not target.is_file():
-                    raise AppError(f"target file does not exist: {target_file}")
-
-            task = self._report_progress(
-                task,
-                5,
-                "NaturalCC task workspace created",
-                stream="code_generation.adapter",
-            )
-            budget = request.budget.model_dump(exclude_none=True)
-            budget["max_seconds"] = min(budget.get("max_seconds", timeout_seconds), timeout_seconds)
-            deadline = asyncio.get_running_loop().time() + timeout_seconds
-            async with asyncio.timeout(timeout_seconds):
-                create_outcome_unknown = True
-                self.task_store.merge_metadata(task_id, {"cleanup_pending": True})
-                created = await self.naturalcc_service.create_run(
-                    workspace=task_workspace,
-                    request=NaturalCCRunRequest(
-                        goal=self._naturalcc_goal(request.operation.value, request.instruction),
-                        target_files=request.target_files,
-                        budget=budget,
-                    ),
-                )
-                remote_run_id = created.get("run_id")
-                if not isinstance(remote_run_id, str) or not remote_run_id:
-                    raise NaturalCCCreateError(outcome_unknown=True)
-                remote_run_created = True
-                create_outcome_unknown = False
-                self._set_naturalcc_run(task_id, remote_run_id)
-                self.task_store.merge_metadata(
-                    task_id,
-                    {"naturalcc_run_id": remote_run_id, "cleanup_pending": True},
-                )
-                self._raise_if_cancel_requested(task_id)
-
-                approvals = ["write"]
-                if self.naturalcc_approve_execute:
-                    approvals.append("execute")
-                for risk in approvals:
-                    await self.naturalcc_service.approve(remote_run_id, risk)
-                    self._raise_if_cancel_requested(task_id)
-
-                remaining_timeout_seconds = max(
-                    0.1,
-                    deadline - asyncio.get_running_loop().time(),
-                )
-                task, state = await self._run_and_poll_naturalcc(
-                    task,
-                    remote_run_id,
-                    timeout_seconds=remaining_timeout_seconds,
-                )
-                if not self._naturalcc_state_is_terminal(state):
-                    original_state = dict(state)
-                    await self._cancel_naturalcc_run(task_id)
-                    state = original_state
-                else:
-                    self._mark_naturalcc_terminal_confirmed(task_id)
-                self._apply_naturalcc_state(
-                    task,
-                    request.operation.value,
-                    remote_run_id,
-                    state,
-                )
-        except CancellationRequested:
-            if remote_run_id is not None:
-                await self._cancel_naturalcc_run(task_id)
-            self._mark_cancelled(task)
-        except NaturalCCCreateError as exc:
-            create_outcome_unknown = exc.outcome_unknown
-            self._mark_failed(task, "NaturalCC service request failed")
-        except TimeoutError:
-            if remote_run_id is not None:
-                await self._cancel_naturalcc_run(task_id)
-            self._mark_failed(task, "NaturalCC task timed out")
-        except NaturalCCClientError:
-            if remote_run_id is not None:
-                await self._cancel_naturalcc_run(task_id)
-            self._mark_failed(task, "NaturalCC service request failed")
-        except AppError as exc:
-            if remote_run_id is not None:
-                await self._cancel_naturalcc_run(task_id)
-            self._mark_failed(task, str(exc))
-        except Exception:
-            if remote_run_id is not None:
-                await self._cancel_naturalcc_run(task_id)
-            self._mark_failed(task, "NaturalCC task failed")
-        finally:
-            self._clear_naturalcc_run(task_id)
-            self._finalize_with_cleanup(
-                task,
-                lambda _: self._finish_naturalcc_cleanup(
-                    task_id=task_id,
-                    project_id=request.project_id,
-                    remote_run_created=remote_run_created,
-                    create_outcome_unknown=create_outcome_unknown,
-                ),
-            )
-            if self._naturalcc_cleanup_pending(self.task_store.require(task_id)) and (
-                self._naturalcc_run_id(task_id) is not None
-            ):
-                self._schedule_naturalcc_cleanup_retry(task_id)
 
     async def _prepare_process(
         self,
@@ -825,11 +927,19 @@ class TaskService:
             ),
             _report_progress=report_progress,
             _is_cancelled=lambda: self.task_store.require(task.id).cancel_requested,
+            _resolve_path=lambda path: self.workspace_service.resolve_path_in_workspace(
+                workspace, path
+            ),
         )
         prepared = await prepare(context)
         self._raise_if_cancel_requested(task.id)
         self._validate_prepared_process(prepared)
-        updated = self.task_store.update_command_if_running(task.id, prepared.command)
+        recorded_command = (
+            prepared.recorded_command
+            if prepared.recorded_command is not None
+            else prepared.command
+        )
+        updated = self.task_store.update_command_if_running(task.id, recorded_command)
         if updated is None:
             raise CancellationRequested()
         self._raise_if_cancel_requested(task.id)
@@ -839,10 +949,18 @@ class TaskService:
     def _validate_prepared_process(prepared: object) -> None:
         if not isinstance(prepared, PreparedProcess):
             raise AppError("prepare must return PreparedProcess")
-        if not prepared.command or not all(
+        if not isinstance(prepared.command, list) or not prepared.command or not all(
             isinstance(item, str) and item for item in prepared.command
         ):
             raise AppError("prepared command must contain non-empty strings")
+        if prepared.recorded_command is not None and (
+            not isinstance(prepared.recorded_command, list)
+            or not prepared.recorded_command
+            or not all(
+                isinstance(item, str) and item for item in prepared.recorded_command
+            )
+        ):
+            raise AppError("recorded command must contain non-empty strings")
         if not isinstance(prepared.work_dir, str):
             raise AppError("prepared work_dir must be a string")
 
@@ -852,121 +970,32 @@ class TaskService:
             callable(prepare) and inspect.iscoroutinefunction(prepare.__call__)
         )
 
-    async def _run_schedule_experiment(
+    @staticmethod
+    def _is_async_executor(execute: ManagedTaskExecutor) -> bool:
+        return inspect.iscoroutinefunction(execute) or (
+            callable(execute) and inspect.iscoroutinefunction(execute.__call__)
+        )
+
+    @staticmethod
+    def _is_async_cancellation_handler(
+        handler: ManagedTaskCancellationHandler,
+    ) -> bool:
+        return inspect.iscoroutinefunction(handler) or (
+            callable(handler) and inspect.iscoroutinefunction(handler.__call__)
+        )
+
+    def _resolve_process_source_workspace(
         self,
-        task_id: UUID,
-        request: ScheduleExperimentRequest,
-    ) -> None:
-        task = self.task_store.try_start(task_id)
-        if task is None:
-            return
-
-        try:
-            task = self._report_progress(task, 10, "schedule experiment started")
-            plan = self.scheduler_service.create_plan(
-                task_id=task_id,
-                strategy=request.strategy,
-                tasks=request.tasks,
-                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
-                core_ids=request.core_ids,
-            )
-            cwd = self.workspace_service.create_task_workspace(request.project_id, task_id)
-            execution = await self.schedule_execution_service.execute(
-                plan=plan,
-                tasks=request.tasks,
-                cwd=cwd,
-                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
-                on_log=lambda message, stream: self.log_service.append(
-                    task_id,
-                    message,
-                    stream=stream,
-                ),
-                on_progress=lambda percent, message: self._report_progress(
-                    task,
-                    percent,
-                    message,
-                ),
-                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
-            )
-            task.result = {
-                **plan.model_dump(mode="json"),
-                "execution": execution.model_dump(mode="json"),
-            }
-            task.elapsed_ms = execution.actual_makespan_ms
-            task.exit_code = 0 if execution.all_succeeded else 1
-            task.status = TaskStatus.SUCCEEDED if execution.all_succeeded else TaskStatus.FAILED
-            if not execution.all_succeeded:
-                task.error = "one or more scheduled tasks failed"
-            task.progress = 100
-            task.finished_at = utc_now()
-        except CancellationRequested:
-            self._mark_cancelled(task)
-        except Exception as exc:
-            self._mark_failed(task, str(exc))
-        finally:
-            self._finalize_with_cleanup(
-                task,
-                lambda _: self.workspace_service.cleanup_task_workspaces(
-                    request.project_id, task_id
-                ),
-            )
-
-    async def _run_schedule_comparison(
-        self,
-        task_id: UUID,
-        request: ScheduleComparisonRequest,
-    ) -> None:
-        task = self.task_store.try_start(task_id)
-        if task is None:
-            return
-
-        try:
-            task = self._report_progress(task, 5, "schedule comparison started")
-            cwd = self.workspace_service.resolve_work_dir(request.project_id, ".")
-            summary = await self.schedule_comparison_service.compare(
-                task_id=task_id,
-                workloads=request.workloads,
-                core_ids=request.core_ids,
-                cwd=cwd,
-                timeout_seconds=request.timeout_seconds or self.default_timeout_seconds,
-                on_log=lambda message, stream: self.log_service.append(
-                    task_id,
-                    message,
-                    stream=stream,
-                ),
-                on_progress=lambda percent, message: self._report_progress(
-                    task,
-                    percent,
-                    message,
-                ),
-                is_cancelled=lambda: self.task_store.require(task_id).cancel_requested,
-                workspace_factory=lambda: self.workspace_service.create_task_workspace(
-                    request.project_id, task_id
-                ),
-            )
-            task.result = summary.model_dump(mode="json")
-            task.elapsed_ms = sum(
-                result.fifo.execution.actual_makespan_ms
-                + result.optimized.execution.actual_makespan_ms
-                for result in summary.workload_results
-            )
-            task.exit_code = 0 if summary.all_tasks_succeeded else 1
-            task.status = TaskStatus.SUCCEEDED if summary.all_tasks_succeeded else TaskStatus.FAILED
-            if not summary.all_tasks_succeeded:
-                task.error = "one or more comparison tasks failed"
-            task.progress = 100
-            task.finished_at = utc_now()
-        except CancellationRequested:
-            self._mark_cancelled(task)
-        except Exception as exc:
-            self._mark_failed(task, str(exc))
-        finally:
-            self._finalize_with_cleanup(
-                task,
-                lambda _: self.workspace_service.cleanup_task_workspaces(
-                    request.project_id, task_id
-                ),
-            )
+        project_id: UUID,
+        source_task_id: UUID | None,
+    ) -> Path | None:
+        self.workspace_service.require_project(project_id)
+        if source_task_id is None:
+            return None
+        source_task = self.task_store.require(source_task_id)
+        if source_task.project_id != project_id or source_task.status != TaskStatus.SUCCEEDED:
+            raise AppError("source_task_id must reference a succeeded task in the same project")
+        return self.workspace_service.resolve_task_workspace(project_id, source_task_id)
 
     def _mark_cancelled(self, task: TaskRecord) -> None:
         task.status = TaskStatus.CANCELLED
@@ -992,302 +1021,9 @@ class TaskService:
         )
         return latest
 
-    def _set_naturalcc_run(self, task_id: UUID, run_id: str) -> None:
-        with self._naturalcc_runs_lock:
-            self._naturalcc_runs[task_id] = run_id
-
-    def _clear_naturalcc_run(self, task_id: UUID) -> None:
-        with self._naturalcc_runs_lock:
-            self._naturalcc_runs.pop(task_id, None)
-
-    def _naturalcc_run_id(self, task_id: UUID) -> str | None:
-        with self._naturalcc_runs_lock:
-            run_id = self._naturalcc_runs.get(task_id)
-        if run_id is not None:
-            return run_id
-        metadata_run_id = self.task_store.require(task_id).metadata.get("naturalcc_run_id")
-        return metadata_run_id if isinstance(metadata_run_id, str) else None
-
-    async def _cancel_naturalcc_run(
-        self,
-        task_id: UUID,
-        *,
-        deadline: float | None = None,
-    ) -> tuple[bool, dict[str, Any]]:
-        run_id = self._naturalcc_run_id(task_id)
-        if run_id is None or self.naturalcc_service is None:
-            return False, {}
-        loop = asyncio.get_running_loop()
-        end = min(deadline, loop.time() + _NATURALCC_CANCEL_TIMEOUT_SECONDS) if deadline else (
-            loop.time() + _NATURALCC_CANCEL_TIMEOUT_SECONDS
-        )
-        last_state: dict[str, Any] = {}
-        for attempt in range(_NATURALCC_CANCEL_ATTEMPTS):
-            remaining = end - loop.time()
-            if remaining <= 0:
-                break
-            timeout_seconds = min(0.5, remaining)
-            try:
-                await self.naturalcc_service.cancel(run_id, timeout_seconds=timeout_seconds)
-            except Exception:
-                logger.warning("NaturalCC cancellation request failed for task %s", task_id)
-            remaining = end - loop.time()
-            if remaining > 0:
-                try:
-                    last_state = await self.naturalcc_service.get_run(
-                        run_id,
-                        timeout_seconds=min(0.5, remaining),
-                    )
-                    if self._naturalcc_state_is_terminal(last_state):
-                        self._mark_naturalcc_terminal_confirmed(task_id)
-                        return True, last_state
-                except Exception:
-                    logger.warning(
-                        "NaturalCC cancellation confirmation failed for task %s",
-                        task_id,
-                    )
-            if attempt < _NATURALCC_CANCEL_ATTEMPTS - 1:
-                await asyncio.sleep(min(0.1 * (attempt + 1), max(0, end - loop.time())))
-        return False, last_state
-
-    @staticmethod
-    def _naturalcc_state_is_terminal(state: dict[str, Any]) -> bool:
-        return state.get("status") in _NATURALCC_TERMINAL_STATUSES
-
-    @staticmethod
-    def _naturalcc_cleanup_pending(task: TaskRecord) -> bool:
-        return task.metadata.get("cleanup_pending") is True
-
-    def _clear_naturalcc_cleanup_pending(self, task_id: UUID) -> None:
-        self.task_store.merge_metadata(task_id, {"cleanup_pending": False})
-
-    def _mark_naturalcc_terminal_confirmed(self, task_id: UUID) -> None:
-        self.task_store.merge_metadata(task_id, {"naturalcc_terminal_confirmed": True})
-
-    def _finish_naturalcc_cleanup(
-        self,
-        *,
-        task_id: UUID,
-        project_id: UUID,
-        remote_run_created: bool,
-        create_outcome_unknown: bool,
-    ) -> None:
-        task = self.task_store.require(task_id)
-        if not self._naturalcc_cleanup_pending(task):
-            return
-        if task.status == TaskStatus.SUCCEEDED:
-            if task.metadata.get("naturalcc_terminal_confirmed") is True:
-                self._clear_naturalcc_cleanup_pending(task_id)
-            return
-        if remote_run_created and task.metadata.get("naturalcc_terminal_confirmed") is not True:
-            return
-        if not remote_run_created and create_outcome_unknown:
-            return
-        try:
-            self.workspace_service.cleanup_task_workspaces(project_id, task_id)
-        except Exception:
-            logger.warning("failed to clean NaturalCC workspace %s", task_id, exc_info=True)
-            return
-        self._clear_naturalcc_cleanup_pending(task_id)
-
-    async def _recover_naturalcc_cleanup(self, task: TaskRecord) -> bool:
-        latest = self.task_store.require(task.id)
-        if latest.metadata.get("naturalcc_terminal_confirmed") is not True:
-            confirmed, _ = await self._cancel_naturalcc_run(task.id)
-            if not confirmed:
-                return False
-        latest = self.task_store.require(task.id)
-        if latest.status == TaskStatus.SUCCEEDED:
-            self._clear_naturalcc_cleanup_pending(task.id)
-            return True
-        self._finish_naturalcc_cleanup(
-            task_id=task.id,
-            project_id=task.project_id,
-            remote_run_created=True,
-            create_outcome_unknown=False,
-        )
-        return not self._naturalcc_cleanup_pending(self.task_store.require(task.id))
-
-    def _schedule_naturalcc_cleanup_retry(self, task_id: UUID) -> None:
-        with self._lifecycle_lock:
-            loop = self._naturalcc_loop
-            if self._lifecycle_state != "RUNNING" or loop is None or loop.is_closed():
-                return
-        try:
-            loop.call_soon_threadsafe(self._start_naturalcc_cleanup_retry, task_id)
-        except RuntimeError:
-            return
-
-    def _start_naturalcc_cleanup_retry(self, task_id: UUID) -> None:
-        with self._lifecycle_lock:
-            if self._lifecycle_state != "RUNNING":
-                return
-        with self._naturalcc_cleanup_retries_lock:
-            existing = self._naturalcc_cleanup_retries.get(task_id)
-            if existing is not None and not existing.done():
-                return
-            retry = asyncio.create_task(self._retry_naturalcc_cleanup(task_id))
-            self._naturalcc_cleanup_retries[task_id] = retry
-        retry.add_done_callback(
-            lambda completed: self._forget_naturalcc_cleanup_retry(task_id, completed)
-        )
-
-    def _forget_naturalcc_cleanup_retry(
-        self,
-        task_id: UUID,
-        retry: asyncio.Task[None],
-    ) -> None:
-        with self._naturalcc_cleanup_retries_lock:
-            if self._naturalcc_cleanup_retries.get(task_id) is retry:
-                self._naturalcc_cleanup_retries.pop(task_id, None)
-
-    async def _retry_naturalcc_cleanup(self, task_id: UUID) -> None:
-        for _ in range(_NATURALCC_CLEANUP_RETRY_ATTEMPTS):
-            await asyncio.sleep(_NATURALCC_CLEANUP_RETRY_SECONDS)
-            with self._lifecycle_lock:
-                if self._lifecycle_state != "RUNNING":
-                    return
-            try:
-                if await self._recover_naturalcc_cleanup(self.task_store.require(task_id)):
-                    return
-            except Exception:
-                logger.warning("NaturalCC cleanup retry failed for task %s", task_id, exc_info=True)
-
-    async def _stop_naturalcc_cleanup_retries(self) -> None:
-        with self._naturalcc_cleanup_retries_lock:
-            retries = list(self._naturalcc_cleanup_retries.values())
-        for retry in retries:
-            retry.cancel()
-        if retries:
-            await asyncio.gather(*retries, return_exceptions=True)
-
-    @staticmethod
-    def _naturalcc_goal(operation: str, instruction: str) -> str:
-        return f"{_NATURALCC_OPERATION_GOALS[operation]}\n\n{instruction}"
-
     def _raise_if_cancel_requested(self, task_id: UUID) -> None:
         if self.task_store.require(task_id).cancel_requested:
             raise CancellationRequested()
-
-    async def _run_and_poll_naturalcc(
-        self,
-        task: TaskRecord,
-        run_id: str,
-        *,
-        timeout_seconds: float,
-    ) -> tuple[TaskRecord, dict[str, Any]]:
-        assert self.naturalcc_service is not None
-        run_task = asyncio.create_task(
-            self.naturalcc_service.run(run_id, timeout_seconds=timeout_seconds)
-        )
-        after = 0
-        try:
-            while not run_task.done():
-                if self.task_store.require(task.id).cancel_requested:
-                    await self._cancel_naturalcc_run(task.id)
-                    raise CancellationRequested()
-                events = await self.naturalcc_service.events(run_id, after=after)
-                task, after = self._report_naturalcc_events(task, events, after)
-                await asyncio.sleep(0.25)
-            state = await run_task
-            events = await self.naturalcc_service.events(run_id, after=after)
-            task, _ = self._report_naturalcc_events(task, events, after)
-            return task, state
-        finally:
-            if not run_task.done():
-                run_task.cancel()
-                await asyncio.gather(run_task, return_exceptions=True)
-
-    def _report_naturalcc_events(
-        self,
-        task: TaskRecord,
-        response: dict[str, Any],
-        after: int,
-    ) -> tuple[TaskRecord, int]:
-        events = response.get("events")
-        if not isinstance(events, list):
-            return task, after
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            sequence = event.get("sequence")
-            if isinstance(sequence, int):
-                after = max(after, sequence)
-            event_type = event.get("type")
-            progress = (
-                _NATURALCC_EVENT_PROGRESS.get(event_type)
-                if isinstance(event_type, str)
-                else None
-            )
-            if progress is None:
-                progress = event.get("progress")
-                if not isinstance(progress, int):
-                    payload = event.get("payload")
-                    progress = payload.get("progress") if isinstance(payload, dict) else None
-            message = (
-                f"NaturalCC event: {event_type}"
-                if isinstance(event_type, str) and event_type in _NATURALCC_EVENT_PROGRESS
-                else "NaturalCC event received"
-            )
-            if isinstance(progress, int) and 0 <= progress <= 95 and progress > task.progress:
-                task = self._report_progress(
-                    task,
-                    progress,
-                    message,
-                    stream="code_generation.adapter",
-                )
-            else:
-                self.log_service.append(
-                    task.id,
-                    message,
-                    stream="code_generation.adapter",
-                    progress=task.progress,
-                )
-        return task, after
-
-    def _apply_naturalcc_state(
-        self,
-        task: TaskRecord,
-        operation: str,
-        run_id: str,
-        state: dict[str, Any],
-    ) -> None:
-        status = state.get("status")
-        if status == "cancelled":
-            self._mark_cancelled(task)
-            return
-        if status == "completed":
-            task.status = TaskStatus.SUCCEEDED
-            task.finished_at = utc_now()
-            task.exit_code = 0
-            task.progress = 100
-            task.result = {
-                "operation": operation,
-                "naturalcc_run_id": run_id,
-                "final_answer": state.get("final_answer", ""),
-                "changed_files": self._changed_files(state),
-            }
-            return
-        if status in {"paused", "waiting_approval"}:
-            self._mark_failed(
-                task,
-                f"NaturalCC run remained {status}; cancelled for the approval safety policy",
-            )
-            return
-        if status in {"failed", "budget_exhausted", "unsupported"}:
-            self._mark_failed(task, f"NaturalCC run ended with status {status}")
-            return
-        self._mark_failed(task, "NaturalCC run returned an unsupported status")
-
-    @staticmethod
-    def _changed_files(state: dict[str, Any]) -> list[str]:
-        changed_files = state.get("changed_files")
-        if not isinstance(changed_files, list):
-            working_state = state.get("working_state")
-            changed_files = (
-                working_state.get("changed_files", []) if isinstance(working_state, dict) else []
-            )
-        return [item for item in changed_files if isinstance(item, str)]
 
     def _mark_failed(self, task: TaskRecord, message: str) -> None:
         task.status = TaskStatus.FAILED
@@ -1307,10 +1043,21 @@ class TaskService:
         self,
         task: TaskRecord,
         cleanup: Callable[[TaskRecord | None], None],
+        *,
+        artifacts_on_success: bool = False,
+        queue_workspace_cleanup_on_finalize: bool = False,
+        preserve_workspace_on_success: bool = False,
     ) -> None:
         finalized: TaskRecord | None = None
         try:
-            finalized, changed = self.task_store.finalize_with_transition(task)
+            finalized, changed = self.task_store.finalize_with_transition(
+                task,
+                artifacts_on_success=artifacts_on_success,
+                queue_workspace_cleanup_on_finalize=(
+                    queue_workspace_cleanup_on_finalize
+                ),
+                preserve_workspace_on_success=preserve_workspace_on_success,
+            )
             if changed:
                 self._log_final_state(finalized)
         finally:

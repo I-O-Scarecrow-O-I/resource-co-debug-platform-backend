@@ -26,6 +26,13 @@ artifact retention. B/C modules must not directly manage `TaskStore`, `Workspace
 `ProcessRunner`. This is a narrow integration contract, not a generic plugin framework.
 Preparers must be async; their timeout is one total deadline covering preparation and process
 execution. A cancelled or timed-out preparer must not suppress `asyncio.CancelledError`.
+Modules submit already-built local commands through `TaskService.create_process_task(...)`.
+`create_managed_task(...)` is a narrow callback contract for module-owned business orchestration,
+not a plugin system. `CodeGenerationTaskService` uses that contract for NaturalCC orchestration,
+including the generic workspace hold and managed cancellation-handler capabilities. The hold is
+persisted independently from task metadata so restart cleanup fails closed while a remote run may
+still access a workspace. The platform owns task state and cleanup but does not understand
+NaturalCC runs, events, approvals, or retry policy.
 
 ## Contract Backend Modules
 
@@ -52,5 +59,7 @@ The `co_debug` module owns:
 Its services and module-specific response/plan schemas live under
 `app/modules/co_debug/services` and `app/modules/co_debug/schemas`. The `co_debug.scheduler`
 submodule is called as ordinary Python functions by the platform integration point. The platform
-remains responsible for starting Make/GCC/GDB as controlled subprocesses through `ProcessRunner`.
+remains responsible for starting commands as controlled subprocesses through `ProcessRunner`.
+`CoDebugTaskService` owns build/debug request validation and GDB/MI command construction; it uses
+the narrow platform process-task contracts without managing workspace or process services.
 No generic task-handler or plugin abstraction is introduced until another module needs one.

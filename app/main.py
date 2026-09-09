@@ -7,6 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.errors import AppError
+from app.modules.code_generation.deps import (
+    clear_code_generation_task_service_cache,
+    get_code_generation_service,
+    get_code_generation_task_service,
+)
+from app.modules.code_generation.task_service import CodeGenerationTaskService
 from app.platform.api.deps import (
     clear_log_service_cache,
     clear_task_service_cache,
@@ -26,21 +32,33 @@ from app.platform.services.workspace_service import WorkspaceService
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     task_service: TaskService | None = None
+    code_generation_task_service: CodeGenerationTaskService | None = None
     try:
         task_service = get_task_service()
+        code_generation_task_service = get_code_generation_task_service(
+            task_service=task_service,
+            naturalcc_service=get_code_generation_service(),
+        )
         await task_service.startup()
+        await code_generation_task_service.startup()
         yield
     finally:
         try:
             if task_service is not None:
-                try:
-                    await task_service.shutdown()
-                finally:
-                    task_service.close_resources_when_idle()
+                await task_service.shutdown()
         finally:
-            clear_task_store_cache(close=False)
-            clear_log_service_cache(close=False)
-            clear_task_service_cache()
+            try:
+                if code_generation_task_service is not None:
+                    await code_generation_task_service.shutdown()
+            finally:
+                try:
+                    if task_service is not None:
+                        task_service.close_resources_when_idle()
+                finally:
+                    clear_code_generation_task_service_cache()
+                    clear_task_store_cache(close=False)
+                    clear_log_service_cache(close=False)
+                    clear_task_service_cache()
 
 
 def create_app() -> FastAPI:

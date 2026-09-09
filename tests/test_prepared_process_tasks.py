@@ -75,9 +75,6 @@ def _service(
             task_store=TaskStore(tmp_path / "tasks.sqlite3"),
             log_service=TaskLogService(100, tmp_path / "logs.sqlite3"),
             process_runner=process_runner,
-            scheduler_service=None,
-            schedule_execution_service=None,
-            schedule_comparison_service=None,
             default_timeout_seconds=10,
         ),
         workspace_service,
@@ -145,6 +142,49 @@ async def test_prepared_process_uses_isolated_workspace_and_persists_command(tmp
     finally:
         await service.shutdown(grace_seconds=0)
         service.close_resources_when_idle()
+
+
+@pytest.mark.asyncio
+async def test_prepared_process_runs_actual_and_persists_recorded_command(tmp_path) -> None:
+    runner = RecordingProcessRunner()
+    service, workspace_service = _service(tmp_path, runner)
+    project = await _project(workspace_service)
+    actual_command: list[str] = []
+
+    async def prepare(context: TaskPreparationContext) -> PreparedProcess:
+        actual_command.extend(["prepared-tool", str(context.workspace / "input.txt")])
+        return PreparedProcess(
+            command=actual_command,
+            recorded_command=["prepared-tool", "input.txt"],
+        )
+
+    try:
+        task = await service.create_prepared_process_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.DEPENDENCY_ANALYSIS,
+            prepare=prepare,
+        )
+        completed = await _wait_for_terminal(service, task.id)
+
+        assert completed.status == TaskStatus.SUCCEEDED
+        assert completed.command == ["prepared-tool", "input.txt"]
+        assert runner.calls[0][0] == actual_command
+        assert Path(runner.calls[0][0][1]).is_absolute()
+    finally:
+        await service.shutdown(grace_seconds=0)
+        service.close_resources_when_idle()
+
+
+@pytest.mark.parametrize("recorded_command", [[], [""], ["ok", 1], "logical"])
+def test_prepared_process_rejects_invalid_recorded_command(recorded_command) -> None:
+    with pytest.raises(
+        AppError,
+        match="recorded command must contain non-empty strings",
+    ):
+        TaskService._validate_prepared_process(
+            PreparedProcess(command=["prepared-tool"], recorded_command=recorded_command)
+        )
 
 
 @pytest.mark.asyncio

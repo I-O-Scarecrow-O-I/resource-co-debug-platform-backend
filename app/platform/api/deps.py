@@ -1,6 +1,9 @@
 import threading
 import weakref
 from functools import lru_cache
+from typing import Annotated
+
+from fastapi import Depends
 
 from app.core.config import Settings
 from app.core.config import get_settings as load_settings
@@ -10,7 +13,7 @@ from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
 from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
 from app.modules.co_debug.services.scheduler_service import SchedulerService
-from app.modules.code_generation.deps import get_code_generation_service
+from app.modules.co_debug.services.task_service import CoDebugTaskService
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_service import TaskService
@@ -51,7 +54,7 @@ def get_process_runner() -> ProcessRunner:
 
 @lru_cache
 def get_scheduler_service() -> SchedulerService:
-    return SchedulerService(log_service=get_log_service())
+    return SchedulerService()
 
 
 @lru_cache
@@ -60,11 +63,22 @@ def get_schedule_execution_service() -> ScheduleExecutionService:
 
 
 @lru_cache
-def get_schedule_comparison_service() -> ScheduleComparisonService:
+def get_metric_service() -> AcceptanceMetricService:
+    return AcceptanceMetricService()
+
+
+def get_schedule_comparison_service(
+    scheduler_service: Annotated[SchedulerService, Depends(get_scheduler_service)],
+    execution_service: Annotated[
+        ScheduleExecutionService,
+        Depends(get_schedule_execution_service),
+    ],
+    metric_service: Annotated[AcceptanceMetricService, Depends(get_metric_service)],
+) -> ScheduleComparisonService:
     return ScheduleComparisonService(
-        scheduler_service=get_scheduler_service(),
-        execution_service=get_schedule_execution_service(),
-        metric_service=get_metric_service(),
+        scheduler_service=scheduler_service,
+        execution_service=execution_service,
+        metric_service=metric_service,
     )
 
 
@@ -75,19 +89,37 @@ def get_task_service() -> TaskService:
         task_store=get_task_store(),
         log_service=get_log_service(),
         process_runner=get_process_runner(),
-        scheduler_service=get_scheduler_service(),
-        schedule_execution_service=get_schedule_execution_service(),
-        schedule_comparison_service=get_schedule_comparison_service(),
         default_timeout_seconds=get_settings().default_task_timeout_seconds,
-        naturalcc_service=get_code_generation_service(),
-        naturalcc_approve_execute=get_settings().naturalcc_approve_execute,
     )
     with _task_services_lock:
         _task_services.add(task_service)
     return task_service
 
 
+def get_co_debug_task_service(
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+    scheduler_service: Annotated[SchedulerService, Depends(get_scheduler_service)],
+    schedule_execution_service: Annotated[
+        ScheduleExecutionService,
+        Depends(get_schedule_execution_service),
+    ],
+    schedule_comparison_service: Annotated[
+        ScheduleComparisonService,
+        Depends(get_schedule_comparison_service),
+    ],
+) -> CoDebugTaskService:
+    return CoDebugTaskService(
+        task_service=task_service,
+        scheduler_service=scheduler_service,
+        schedule_execution_service=schedule_execution_service,
+        schedule_comparison_service=schedule_comparison_service,
+    )
+
+
 def clear_task_service_cache() -> None:
+    from app.modules.code_generation.deps import clear_code_generation_task_service_cache
+
+    clear_code_generation_task_service_cache()
     get_task_service.cache_clear()
 
 
@@ -105,9 +137,7 @@ def _ensure_task_services_can_close(resource_name: str) -> None:
 def clear_log_service_cache(*, close: bool = True) -> None:
     if close:
         _ensure_task_services_can_close("log service")
-    get_task_service.cache_clear()
-    get_schedule_comparison_service.cache_clear()
-    get_scheduler_service.cache_clear()
+    clear_task_service_cache()
     if close and get_log_service.cache_info().currsize:
         get_log_service().close()
     get_log_service.cache_clear()
@@ -116,7 +146,7 @@ def clear_log_service_cache(*, close: bool = True) -> None:
 def clear_task_store_cache(*, close: bool = True) -> None:
     if close:
         _ensure_task_services_can_close("task store")
-    get_task_service.cache_clear()
+    clear_task_service_cache()
     get_debug_service.cache_clear()
     if close and get_task_store.cache_info().currsize:
         get_task_store().close()
@@ -131,9 +161,3 @@ def get_dependency_service() -> DependencyAnalysisService:
 @lru_cache
 def get_debug_service() -> DebugSessionService:
     return DebugSessionService(task_store=get_task_store())
-
-
-@lru_cache
-def get_metric_service() -> AcceptanceMetricService:
-    return AcceptanceMetricService()
-

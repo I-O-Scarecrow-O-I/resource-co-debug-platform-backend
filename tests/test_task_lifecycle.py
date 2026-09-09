@@ -1,23 +1,35 @@
 import asyncio
 from concurrent.futures import Future
+from typing import Annotated
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
 
 from app.core.errors import AppError
 from app.core.time import utc_now
-from app.main import lifespan
+from app.main import create_app, lifespan
+from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
+from app.modules.code_generation.deps import (
+    clear_code_generation_task_service_cache,
+    get_code_generation_service,
+    get_code_generation_task_service,
+)
+from app.modules.code_generation.task_service import CodeGenerationTaskService
 from app.platform.api.deps import (
     clear_log_service_cache,
     clear_task_service_cache,
     clear_task_store_cache,
+    get_metric_service,
+    get_schedule_comparison_service,
+    get_schedule_execution_service,
+    get_scheduler_service,
     get_task_service,
     get_task_store,
 )
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
-from app.platform.schemas.tasks import BuildTaskRequest
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.task_service import TaskService
 from app.platform.services.task_store import TaskStore
@@ -29,9 +41,6 @@ def _service(task_store: TaskStore | None = None) -> TaskService:
         task_store=task_store or TaskStore(),
         log_service=TaskLogService(max_lines=10),
         process_runner=None,
-        scheduler_service=None,
-        schedule_execution_service=None,
-        schedule_comparison_service=None,
         default_timeout_seconds=10,
     )
 
@@ -44,7 +53,12 @@ async def test_shutdown_is_idempotent_and_rejects_new_tasks() -> None:
     await service.shutdown(grace_seconds=0)
 
     with pytest.raises(AppError, match="shutting down"):
-        await service.create_build_task(BuildTaskRequest(project_id=uuid4()))
+        await service.create_process_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=uuid4(),
+            task_type=TaskType.BUILD,
+            command=["make"],
+        )
 
 
 @pytest.mark.asyncio
@@ -213,20 +227,82 @@ async def test_fastapi_lifespan_owns_task_service(monkeypatch) -> None:
 
     class FakeTaskService:
         async def startup(self) -> None:
-            events.append("startup")
+            events.append("platform startup")
 
         async def shutdown(self) -> None:
-            events.append("shutdown")
+            events.append("platform shutdown")
 
         def close_resources_when_idle(self) -> None:
             pass
 
-    monkeypatch.setattr("app.main.get_task_service", lambda: FakeTaskService())
+    class FakeCodeGenerationTaskService:
+        async def startup(self) -> None:
+            events.append("codegen startup")
+
+        async def shutdown(self) -> None:
+            events.append("codegen shutdown")
+
+    task_service = FakeTaskService()
+    code_generation_task_service = FakeCodeGenerationTaskService()
+    monkeypatch.setattr("app.main.get_task_service", lambda: task_service)
+    monkeypatch.setattr("app.main.get_code_generation_service", object)
+    monkeypatch.setattr(
+        "app.main.get_code_generation_task_service",
+        lambda **kwargs: (
+            code_generation_task_service
+            if kwargs["task_service"] is task_service
+            else None
+        ),
+    )
 
     async with lifespan(FastAPI()):
         events.append("running")
 
-    assert events == ["startup", "running", "shutdown"]
+    assert events == [
+        "platform startup",
+        "codegen startup",
+        "running",
+        "platform shutdown",
+        "codegen shutdown",
+    ]
+
+
+def test_code_generation_task_route_is_present_in_openapi() -> None:
+    assert "/api/v1/modules/code-generation/tasks" in create_app().openapi()["paths"]
+
+
+def test_code_generation_task_service_provider_honors_dependency_overrides() -> None:
+    test_app = FastAPI()
+    replacement_task_service = object()
+    replacement_naturalcc_service = object()
+
+    @test_app.get("/code-generation-provider")
+    def code_generation_provider(
+        service: Annotated[
+            CodeGenerationTaskService,
+            Depends(get_code_generation_task_service),
+        ],
+    ) -> dict[str, bool]:
+        return {
+            "task_service": service.task_service is replacement_task_service,
+            "naturalcc_service": (
+                service.naturalcc_service is replacement_naturalcc_service
+            ),
+        }
+
+    test_app.dependency_overrides[get_task_service] = lambda: replacement_task_service
+    test_app.dependency_overrides[get_code_generation_service] = (
+        lambda: replacement_naturalcc_service
+    )
+    try:
+        with TestClient(test_app) as client:
+            response = client.get("/code-generation-provider")
+
+        assert response.status_code == 200
+        assert response.json() == {"task_service": True, "naturalcc_service": True}
+    finally:
+        test_app.dependency_overrides.clear()
+        clear_code_generation_task_service_cache()
 
 
 @pytest.mark.asyncio
@@ -242,10 +318,14 @@ async def test_lifespan_recreates_cached_task_service_after_shutdown() -> None:
             assert second_service is not first_service
             assert second_service.log_service is not first_service.log_service
             assert not second_service.log_service._closed
-            assert second_service.scheduler_service.log_service is second_service.log_service
+            scheduler_service = get_scheduler_service()
             assert (
-                second_service.schedule_comparison_service.scheduler_service.log_service
-                is second_service.log_service
+                get_schedule_comparison_service(
+                    scheduler_service=scheduler_service,
+                    execution_service=get_schedule_execution_service(),
+                    metric_service=get_metric_service(),
+                ).scheduler_service
+                is scheduler_service
             )
 
         assert first_service._lifecycle_state == "CLOSED"
@@ -253,6 +333,34 @@ async def test_lifespan_recreates_cached_task_service_after_shutdown() -> None:
     finally:
         clear_task_service_cache()
         clear_log_service_cache()
+
+
+def test_schedule_comparison_provider_honors_execution_service_override() -> None:
+    test_app = FastAPI()
+    replacement_execution_service = object()
+
+    @test_app.get("/comparison-provider")
+    def comparison_provider(
+        service: Annotated[
+            ScheduleComparisonService,
+            Depends(get_schedule_comparison_service),
+        ],
+    ) -> dict[str, bool]:
+        return {
+            "uses_override": service.execution_service is replacement_execution_service
+        }
+
+    test_app.dependency_overrides[get_schedule_execution_service] = (
+        lambda: replacement_execution_service
+    )
+    try:
+        with TestClient(test_app) as client:
+            response = client.get("/comparison-provider")
+
+        assert response.status_code == 200
+        assert response.json() == {"uses_override": True}
+    finally:
+        test_app.dependency_overrides.clear()
 
 
 def test_clearing_log_cache_recreates_dependent_task_service() -> None:

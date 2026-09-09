@@ -64,6 +64,47 @@ async def test_task_workspaces_are_independent(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_workspace_name_rejects_cross_platform_escape_forms(tmp_path) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("source.c", "int main(void) { return 0; }")
+    archive.seek(0)
+    service = WorkspaceService(storage_root=tmp_path)
+    project = await service.create_from_archive(
+        archive=UploadFile(file=archive, filename="project.zip")
+    )
+    task_id = uuid4()
+    outside = tmp_path / "outside-workspace"
+
+    invalid_names = [
+        "",
+        ".",
+        "..",
+        "../outside-workspace",
+        r"..\outside-workspace",
+        "/absolute-workspace",
+        str(outside),
+        "C:drive-relative",
+        r"C:\absolute-workspace",
+        r"\\server\share",
+        r"\rooted-workspace",
+        "name:stream",
+        "nested/workspace",
+        r"nested\workspace",
+    ]
+    for workspace_name in invalid_names:
+        with pytest.raises(AppError, match="safe path component"):
+            service.create_task_workspace(
+                project.id,
+                task_id,
+                workspace_name=workspace_name,
+            )
+
+    assert not (project.root_path / "tasks" / str(task_id)).exists()
+    assert not outside.exists()
+
+
+@pytest.mark.asyncio
 async def test_project_workspace_is_restored_from_manifest(tmp_path) -> None:
     archive = io.BytesIO()
     with ZipFile(archive, "w") as zip_file:

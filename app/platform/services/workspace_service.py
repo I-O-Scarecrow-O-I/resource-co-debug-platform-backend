@@ -128,10 +128,39 @@ class WorkspaceService:
         workspace_name: str | None = None,
     ) -> Path:
         project = self.require_project(project_id)
-        task_root = project.root_path / "tasks" / str(task_id)
-        workspace = task_root / (workspace_name or str(uuid4()))
+        name = str(uuid4()) if workspace_name is None else workspace_name
+        self._validate_task_workspace_name(name)
+        project_root = project.root_path.resolve()
+        tasks_root = (project_root / "tasks").resolve()
+        task_root = (tasks_root / str(task_id)).resolve()
+        workspace = (task_root / name).resolve()
+        if not (
+            tasks_root.is_relative_to(project_root)
+            and task_root.is_relative_to(tasks_root)
+            and workspace.is_relative_to(task_root)
+        ):
+            raise AppError("invalid task workspace path")
         copytree(source_path or project.source_path, workspace)
         return workspace
+
+    @staticmethod
+    def _validate_task_workspace_name(workspace_name: str) -> None:
+        path = Path(workspace_name)
+        windows_path = PureWindowsPath(workspace_name)
+        if (
+            not workspace_name
+            or workspace_name in {".", ".."}
+            or "/" in workspace_name
+            or "\\" in workspace_name
+            or ":" in workspace_name
+            or path.is_absolute()
+            or path.anchor
+            or len(path.parts) != 1
+            or windows_path.drive
+            or windows_path.root
+            or windows_path.anchor
+        ):
+            raise AppError("workspace_name must be a safe path component")
 
     def resolve_task_workspace(self, project_id: UUID, task_id: UUID) -> Path:
         project = self.require_project(project_id)
@@ -232,13 +261,33 @@ class WorkspaceService:
         )
 
     def cleanup_task_workspaces(self, project_id: UUID, task_id: UUID) -> None:
-        project = self.require_project(project_id)
-        tasks_root = (project.root_path / "tasks").resolve()
-        task_root = (tasks_root / str(task_id)).resolve()
-        if not task_root.is_relative_to(tasks_root):
-            raise AppError("invalid task workspace")
-        if task_root.exists():
-            rmtree(task_root)
+        with self._lock:
+            project = self.require_project(project_id)
+            project_root_path = project.root_path
+            tasks_root_path = project_root_path / "tasks"
+            task_root_path = tasks_root_path / str(task_id)
+            for path in (project_root_path, tasks_root_path, task_root_path):
+                if self._is_link_or_reparse_point(path):
+                    raise AppError("invalid task workspace")
+
+            project_root = project_root_path.resolve()
+            tasks_root = tasks_root_path.resolve()
+            task_root = task_root_path.resolve()
+            if not (
+                project_root.is_relative_to(self.storage_root)
+                and tasks_root.is_relative_to(project_root)
+                and task_root.is_relative_to(tasks_root)
+            ):
+                raise AppError("invalid task workspace")
+            if not task_root_path.exists():
+                return
+            try:
+                rmtree(task_root)
+            except FileNotFoundError:
+                if self._is_link_or_reparse_point(task_root_path):
+                    raise AppError("invalid task workspace") from None
+                if task_root_path.exists():
+                    raise
 
     def _load_projects(self) -> None:
         for project_dir in self.storage_root.iterdir():

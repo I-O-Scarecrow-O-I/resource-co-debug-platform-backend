@@ -25,39 +25,113 @@ class TaskStore:
         self._connection = sqlite3.connect(connection_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._tasks: dict[UUID, TaskRecord] = {}
-        self._connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                module TEXT NOT NULL,
-                project_id TEXT NOT NULL,
-                task_type TEXT NOT NULL,
-                status TEXT NOT NULL,
-                command_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                started_at TEXT,
-                finished_at TEXT,
-                exit_code INTEGER,
-                elapsed_ms INTEGER,
-                progress INTEGER NOT NULL,
-                result_json TEXT NOT NULL,
-                error TEXT,
-                metadata_json TEXT NOT NULL,
-                cancel_requested INTEGER NOT NULL,
-                revision INTEGER NOT NULL DEFAULT 0
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            workspace_holds_existed = self._table_exists("task_workspace_holds")
+            artifacts_available_existed = self._table_exists(
+                "task_artifacts_available"
             )
-            """
-        )
-        columns = {
-            row["name"] for row in self._connection.execute("PRAGMA table_info(tasks)")
-        }
-        if "revision" not in columns:
             self._connection.execute(
-                "ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    module TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    command_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    exit_code INTEGER,
+                    elapsed_ms INTEGER,
+                    progress INTEGER NOT NULL,
+                    result_json TEXT NOT NULL,
+                    error TEXT,
+                    metadata_json TEXT NOT NULL,
+                    cancel_requested INTEGER NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 0
+                )
+                """,
             )
-        self._connection.commit()
-        rows = self._connection.execute("SELECT * FROM tasks").fetchall()
-        self._tasks = {task.id: task for task in map(self._deserialize, rows)}
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_workspace_cleanup (
+                    task_id TEXT PRIMARY KEY,
+                    completion_metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_workspace_holds (
+                    task_id TEXT PRIMARY KEY
+                )
+                """
+            )
+            if not workspace_holds_existed:
+                self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO task_workspace_holds (task_id)
+                    SELECT id
+                    FROM tasks
+                    WHERE module = ?
+                      AND json_extract(metadata_json, '$.cleanup_pending') = 1
+                    """,
+                    (BackendModuleName.CODE_GENERATION.value,),
+                )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_artifacts_available (
+                    task_id TEXT PRIMARY KEY
+                )
+                """
+            )
+            if not artifacts_available_existed:
+                self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO task_artifacts_available (task_id)
+                    SELECT id
+                    FROM tasks
+                    WHERE status = ?
+                      AND task_type IN (?, ?, ?, ?)
+                    """,
+                    (
+                        TaskStatus.SUCCEEDED.value,
+                        TaskType.BUILD.value,
+                        TaskType.CODE_GENERATION.value,
+                        TaskType.CODE_REPAIR.value,
+                        TaskType.CODE_REFACTOR.value,
+                    ),
+                )
+            columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(tasks)")
+            }
+            if "revision" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
+            cleanup_columns = {
+                row["name"]
+                for row in self._connection.execute(
+                    "PRAGMA table_info(task_workspace_cleanup)"
+                )
+            }
+            if "completion_metadata_json" not in cleanup_columns:
+                self._connection.execute(
+                    "ALTER TABLE task_workspace_cleanup "
+                    "ADD COLUMN completion_metadata_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            self._connection.commit()
+            rows = self._connection.execute("SELECT * FROM tasks").fetchall()
+            self._tasks = {task.id: task for task in map(self._deserialize, rows)}
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.rollback()
+            self._connection.close()
+            self._closed = True
+            raise
 
     @staticmethod
     def _json(value: object) -> str:
@@ -144,6 +218,17 @@ class TaskStore:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("task store is closed")
+
+    def _table_exists(self, table_name: str) -> bool:
+        row = self._connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (table_name,),
+        ).fetchone()
+        return row is not None
 
     def _load(self, task_id: UUID) -> TaskRecord | None:
         row = self._connection.execute(
@@ -283,11 +368,218 @@ class TaskStore:
             self._tasks[task_id] = latest
             return latest
 
+    def mark_workspace_cleanup_pending(self, task_id: UUID) -> None:
+        with self._lock, self._connection:
+            self._ensure_open()
+            if self._load(task_id) is None:
+                raise NotFoundError(f"task not found: {task_id}")
+            self._connection.execute(
+                "INSERT OR IGNORE INTO task_workspace_cleanup (task_id) VALUES (?)",
+                (str(task_id),),
+            )
+
+    def clear_workspace_cleanup_pending(self, task_id: UUID) -> None:
+        with self._lock, self._connection:
+            self._ensure_open()
+            self._connection.execute(
+                "DELETE FROM task_workspace_cleanup WHERE task_id = ?",
+                (str(task_id),),
+            )
+
+    def list_workspace_cleanup_pending(self) -> list[UUID]:
+        with self._lock:
+            self._ensure_open()
+            rows = self._connection.execute(
+                "SELECT task_id FROM task_workspace_cleanup ORDER BY task_id"
+            ).fetchall()
+        pending: list[UUID] = []
+        for row in rows:
+            try:
+                pending.append(UUID(row["task_id"]))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return pending
+
+    def hold_workspaces(
+        self,
+        task_id: UUID,
+        metadata_updates: dict[str, object] | None = None,
+    ) -> TaskRecord:
+        serialized_updates = (
+            self._json(metadata_updates) if metadata_updates is not None else None
+        )
+        with self._lock:
+            self._ensure_open()
+            with self._connection:
+                if self._load(task_id) is None:
+                    raise NotFoundError(f"task not found: {task_id}")
+                if serialized_updates is not None:
+                    self._connection.execute(
+                        """
+                        UPDATE tasks
+                        SET metadata_json = json_patch(metadata_json, ?),
+                            revision = revision + 1
+                        WHERE id = ?
+                        """,
+                        (serialized_updates, str(task_id)),
+                    )
+                self._connection.execute(
+                    "INSERT OR IGNORE INTO task_workspace_holds (task_id) VALUES (?)",
+                    (str(task_id),),
+                )
+                latest = self._load(task_id)
+                assert latest is not None
+            self._tasks[task_id] = latest
+            return latest
+
+    def release_workspaces(
+        self,
+        task_id: UUID,
+        metadata_updates: dict[str, object] | None = None,
+    ) -> TaskRecord:
+        serialized_updates = (
+            self._json(metadata_updates) if metadata_updates is not None else None
+        )
+        with self._lock:
+            self._ensure_open()
+            with self._connection:
+                if self._load(task_id) is None:
+                    raise NotFoundError(f"task not found: {task_id}")
+                if serialized_updates is not None:
+                    self._connection.execute(
+                        """
+                        UPDATE tasks
+                        SET metadata_json = json_patch(metadata_json, ?),
+                            revision = revision + 1
+                        WHERE id = ?
+                        """,
+                        (serialized_updates, str(task_id)),
+                    )
+                self._connection.execute(
+                    "DELETE FROM task_workspace_holds WHERE task_id = ?",
+                    (str(task_id),),
+                )
+                latest = self._load(task_id)
+                assert latest is not None
+            self._tasks[task_id] = latest
+            return latest
+
+    def queue_workspace_cleanup_and_release_hold(
+        self,
+        task_id: UUID,
+        completion_metadata: dict[str, object] | None = None,
+    ) -> TaskRecord:
+        serialized_metadata = self._json(completion_metadata or {})
+        with self._lock:
+            self._ensure_open()
+            with self._connection:
+                if self._load(task_id) is None:
+                    raise NotFoundError(f"task not found: {task_id}")
+                self._connection.execute(
+                    """
+                    INSERT INTO task_workspace_cleanup (
+                        task_id, completion_metadata_json
+                    ) VALUES (?, ?)
+                    ON CONFLICT(task_id) DO UPDATE SET
+                        completion_metadata_json = json_patch(
+                            task_workspace_cleanup.completion_metadata_json,
+                            excluded.completion_metadata_json
+                        )
+                    """,
+                    (str(task_id), serialized_metadata),
+                )
+                self._connection.execute(
+                    "DELETE FROM task_workspace_holds WHERE task_id = ?",
+                    (str(task_id),),
+                )
+                latest = self._load(task_id)
+                assert latest is not None
+            self._tasks[task_id] = latest
+            return latest
+
+    def complete_workspace_cleanup(self, task_id: UUID) -> TaskRecord:
+        with self._lock:
+            self._ensure_open()
+            with self._connection:
+                if self._load(task_id) is None:
+                    raise NotFoundError(f"task not found: {task_id}")
+                row = self._connection.execute(
+                    """
+                    SELECT completion_metadata_json
+                    FROM task_workspace_cleanup
+                    WHERE task_id = ?
+                    """,
+                    (str(task_id),),
+                ).fetchone()
+                if row is not None:
+                    completion_metadata = json.loads(
+                        row["completion_metadata_json"]
+                    )
+                    if not isinstance(completion_metadata, dict):
+                        raise ValueError("completion metadata must be a JSON object")
+                    if completion_metadata:
+                        self._connection.execute(
+                            """
+                            UPDATE tasks
+                            SET metadata_json = json_patch(metadata_json, ?),
+                                revision = revision + 1
+                            WHERE id = ?
+                            """,
+                            (self._json(completion_metadata), str(task_id)),
+                        )
+                    self._connection.execute(
+                        "DELETE FROM task_workspace_cleanup WHERE task_id = ?",
+                        (str(task_id),),
+                    )
+                latest = self._load(task_id)
+                assert latest is not None
+            self._tasks[task_id] = latest
+            return latest
+
+    def workspaces_are_held(self, task_id: UUID) -> bool:
+        with self._lock:
+            self._ensure_open()
+            row = self._connection.execute(
+                "SELECT 1 FROM task_workspace_holds WHERE task_id = ?",
+                (str(task_id),),
+            ).fetchone()
+        return row is not None
+
+    def list_held_workspaces(self) -> list[UUID]:
+        with self._lock:
+            self._ensure_open()
+            rows = self._connection.execute(
+                "SELECT task_id FROM task_workspace_holds ORDER BY task_id"
+            ).fetchall()
+        held: list[UUID] = []
+        for row in rows:
+            try:
+                held.append(UUID(row["task_id"]))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        return held
+
+    def artifacts_are_available(self, task_id: UUID) -> bool:
+        with self._lock:
+            self._ensure_open()
+            row = self._connection.execute(
+                "SELECT 1 FROM task_artifacts_available WHERE task_id = ?",
+                (str(task_id),),
+            ).fetchone()
+        return row is not None
+
     def finalize(self, task: TaskRecord) -> TaskRecord:
         finalized, _ = self.finalize_with_transition(task)
         return finalized
 
-    def finalize_with_transition(self, task: TaskRecord) -> tuple[TaskRecord, bool]:
+    def finalize_with_transition(
+        self,
+        task: TaskRecord,
+        *,
+        artifacts_on_success: bool = False,
+        queue_workspace_cleanup_on_finalize: bool = False,
+        preserve_workspace_on_success: bool = False,
+    ) -> tuple[TaskRecord, bool]:
         if task.status not in {
             TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
@@ -344,6 +636,39 @@ class TaskStore:
             latest = self._load(task.id)
             if latest is None:
                 raise NotFoundError(f"task not found: {task.id}")
+            if (
+                cursor.rowcount == 1
+                and artifacts_on_success
+                and latest.status == TaskStatus.SUCCEEDED
+            ):
+                self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO task_artifacts_available (task_id)
+                    VALUES (?)
+                    """,
+                    (str(task.id),),
+                )
+            should_queue_workspace_cleanup = not (
+                latest.status == TaskStatus.SUCCEEDED
+                and preserve_workspace_on_success
+            )
+            if (
+                cursor.rowcount == 1
+                and queue_workspace_cleanup_on_finalize
+                and should_queue_workspace_cleanup
+            ):
+                held = self._connection.execute(
+                    "SELECT 1 FROM task_workspace_holds WHERE task_id = ?",
+                    (str(task.id),),
+                ).fetchone()
+                if held is None:
+                    self._connection.execute(
+                        """
+                        INSERT OR IGNORE INTO task_workspace_cleanup (task_id)
+                        VALUES (?)
+                        """,
+                        (str(task.id),),
+                    )
             self._tasks[task.id] = latest
             return latest, cursor.rowcount == 1
 

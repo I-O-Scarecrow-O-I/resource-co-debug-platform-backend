@@ -7,18 +7,19 @@ from app.modules.co_debug.scheduler.scheduler import plan_tasks
 from app.modules.co_debug.schemas.scheduler import SchedulePlan
 from app.platform.domain.enums import SchedulerStrategy
 from app.platform.schemas.tasks import TaskExecutionSpec
-from app.platform.services.log_service import TaskLogService
+
+LogCallback = Callable[[str, str], None]
+ProgressCallback = Callable[[int, str], None]
 
 
 class SchedulerService:
-    def __init__(self, log_service: TaskLogService) -> None:
-        self.log_service = log_service
-
     def create_plan(
         self,
         task_id: UUID,
         strategy: SchedulerStrategy,
         tasks: list[TaskExecutionSpec],
+        on_log: LogCallback,
+        on_progress: ProgressCallback,
         is_cancelled: Callable[[], bool],
         core_ids: list[int] | None = None,
         progress_start: int = 10,
@@ -26,15 +27,11 @@ class SchedulerService:
     ) -> SchedulePlan:
         context = TaskContext(
             task_id=task_id,
-            log=lambda message, stream="co_debug.scheduler": self.log_service.append(
-                task_id, message, stream=stream
-            ),
-            progress=lambda percent, message: self.log_service.append(
-                task_id,
-                message,
-                stream="co_debug.scheduler",
-                progress=progress_start
+            log=lambda message, stream="co_debug.scheduler": on_log(message, stream),
+            progress=lambda percent, message: on_progress(
+                progress_start
                 + round(percent * (progress_end - progress_start) / 100),
+                message,
             ),
             is_cancelled=is_cancelled,
         )

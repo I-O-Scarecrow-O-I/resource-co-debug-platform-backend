@@ -4,7 +4,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 
-from app.platform.api.deps import get_log_service, get_task_service
+from app.modules.co_debug.services.task_service import CoDebugTaskService
+from app.platform.api.deps import get_co_debug_task_service, get_log_service, get_task_service
 from app.platform.schemas.common import ApiResponse, LogEvent
 from app.platform.schemas.tasks import (
     BuildArtifactResponse,
@@ -23,7 +24,7 @@ router = APIRouter()
 @router.post("/build", response_model=ApiResponse[TaskResponse])
 async def create_build_task(
     request: BuildTaskRequest,
-    task_service: Annotated[TaskService, Depends(get_task_service)],
+    task_service: Annotated[CoDebugTaskService, Depends(get_co_debug_task_service)],
 ) -> ApiResponse[TaskResponse]:
     task = await task_service.create_build_task(request)
     return ApiResponse.ok(TaskResponse.from_record(task))
@@ -32,7 +33,7 @@ async def create_build_task(
 @router.post("/debug", response_model=ApiResponse[TaskResponse])
 async def create_debug_task(
     request: DebugTaskRequest,
-    task_service: Annotated[TaskService, Depends(get_task_service)],
+    task_service: Annotated[CoDebugTaskService, Depends(get_co_debug_task_service)],
 ) -> ApiResponse[TaskResponse]:
     task = await task_service.create_debug_task(request)
     return ApiResponse.ok(TaskResponse.from_record(task))
@@ -41,7 +42,7 @@ async def create_debug_task(
 @router.post("/schedule-experiments", response_model=ApiResponse[TaskResponse])
 async def create_schedule_experiment(
     request: ScheduleExperimentRequest,
-    task_service: Annotated[TaskService, Depends(get_task_service)],
+    task_service: Annotated[CoDebugTaskService, Depends(get_co_debug_task_service)],
 ) -> ApiResponse[TaskResponse]:
     task = await task_service.create_schedule_experiment(request)
     return ApiResponse.ok(TaskResponse.from_record(task))
@@ -50,7 +51,7 @@ async def create_schedule_experiment(
 @router.post("/schedule-comparisons", response_model=ApiResponse[TaskResponse])
 async def create_schedule_comparison(
     request: ScheduleComparisonRequest,
-    task_service: Annotated[TaskService, Depends(get_task_service)],
+    task_service: Annotated[CoDebugTaskService, Depends(get_co_debug_task_service)],
 ) -> ApiResponse[TaskResponse]:
     task = await task_service.create_schedule_comparison(request)
     return ApiResponse.ok(TaskResponse.from_record(task))

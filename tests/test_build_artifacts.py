@@ -5,7 +5,7 @@ import subprocess
 import sys
 import time
 import zipfile
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import UploadFile
@@ -34,9 +34,6 @@ def _task_service(
         task_store=task_store,
         log_service=log_service,
         process_runner=ProcessRunner(),
-        scheduler_service=None,
-        schedule_execution_service=None,
-        schedule_comparison_service=None,
         default_timeout_seconds=10,
     )
 
@@ -95,6 +92,7 @@ def _create_succeeded_build(client: TestClient, project_id: str) -> str:
 def test_succeeded_build_artifacts_survive_service_rebuild(artifact_api, tmp_path) -> None:
     client, app, project, _, task_store, log_service, task_service = artifact_api
     task_id = _create_succeeded_build(client, str(project.id))
+    assert task_store.artifacts_are_available(UUID(task_id)) is True
 
     asyncio.run(task_service.shutdown(grace_seconds=0))
     task_service.close_resources_when_idle()
@@ -105,6 +103,7 @@ def test_succeeded_build_artifacts_survive_service_rebuild(artifact_api, tmp_pat
     app.dependency_overrides[get_task_service] = lambda: restored_service
 
     try:
+        assert restored_store.artifacts_are_available(UUID(task_id)) is True
         list_response = client.get(f"/api/v1/tasks/{task_id}/artifacts")
         assert list_response.status_code == 200
         artifacts = list_response.json()["data"]
@@ -226,13 +225,18 @@ def test_artifact_access_rejects_basic_paths_and_ineligible_tasks(artifact_api) 
     missing_response = client.get(f"/api/v1/tasks/{task_id}/artifacts/missing.txt")
     assert missing_response.status_code == 404
 
-    for task_type, status in [
-        (TaskType.DEBUG, TaskStatus.SUCCEEDED),
-        (TaskType.BUILD, TaskStatus.FAILED),
+    for module, task_type, status in [
+        (BackendModuleName.CO_DEBUG, TaskType.DEBUG, TaskStatus.SUCCEEDED),
+        (BackendModuleName.CO_DEBUG, TaskType.BUILD, TaskStatus.FAILED),
+        (
+            BackendModuleName.VULNERABILITY,
+            TaskType.VULNERABILITY_SCAN,
+            TaskStatus.SUCCEEDED,
+        ),
     ]:
         task = TaskRecord(
             id=uuid4(),
-            module=BackendModuleName.CO_DEBUG,
+            module=module,
             project_id=project.id,
             task_type=task_type,
             status=status,
@@ -240,6 +244,9 @@ def test_artifact_access_rejects_basic_paths_and_ineligible_tasks(artifact_api) 
             created_at=utc_now(),
         )
         task_store.save(task)
+        if module == BackendModuleName.VULNERABILITY:
+            workspace = workspace_service.create_task_workspace(project.id, task.id)
+            (workspace / "report.txt").write_text("report", encoding="utf-8")
         response = client.get(f"/api/v1/tasks/{task.id}/artifacts")
         assert response.status_code == 400
 
