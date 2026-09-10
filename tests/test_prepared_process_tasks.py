@@ -138,7 +138,7 @@ async def test_prepared_process_uses_isolated_workspace_and_persists_command(tmp
         assert service.require_task(task.id).command == ["prepared-tool", "--flag"]
         assert len(received) == 1
         assert runner.calls == [(["prepared-tool", "--flag"], received[0].workspace / "nested", 7)]
-        assert (received[0].workspace / "input.txt").is_file()
+        await _wait_for_path_removal(received[0].workspace)
     finally:
         await service.shutdown(grace_seconds=0)
         service.close_resources_when_idle()

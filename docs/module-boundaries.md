@@ -34,6 +34,14 @@ persisted independently from task metadata so restart cleanup fails closed while
 still access a workspace. The platform owns task state and cleanup but does not understand
 NaturalCC runs, events, approvals, or retry policy.
 
+Managed executors that need a long-lived local subprocess use
+`ManagedTaskContext.open_interactive_process(...)`. Modules receive only the structural
+`InteractiveProcessSession` protocol (`write`, `wait`, `terminate`, and `returncode`); the platform
+keeps the concrete subprocess handle, streams output into task logs, constrains the working
+directory to a workspace created by that managed task, and terminates every open session before
+task finalization and workspace cleanup. This capability is transport only: GDB/MI framing,
+tokens, parsing, and state remain module responsibilities.
+
 ## Contract Backend Modules
 
 The contract backend modules are:

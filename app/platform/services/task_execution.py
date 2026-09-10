@@ -32,6 +32,24 @@ WorkspaceHolder = Callable[[dict[str, object] | None], None]
 WorkspaceReleaser = Callable[[bool, dict[str, object] | None], None]
 
 
+class InteractiveProcessSession(Protocol):
+    @property
+    def returncode(self) -> int | None: ...
+
+    async def write(self, data: str) -> None: ...
+
+    async def wait(self) -> int: ...
+
+    async def terminate(self) -> None: ...
+
+
+InteractiveOutputCallback = Callable[[str, str], None]
+InteractiveProcessOpener = Callable[
+    [list[str], Path, str, InteractiveOutputCallback | None],
+    Awaitable[InteractiveProcessSession],
+]
+
+
 @dataclass(slots=True)
 class TaskPreparationContext:
     """The bounded platform capabilities available while a module prepares a task."""
@@ -83,6 +101,7 @@ class ManagedTaskContext:
     _merge_metadata: MetadataMerger = field(repr=False)
     _hold_workspaces: WorkspaceHolder = field(repr=False)
     _release_workspaces: WorkspaceReleaser = field(repr=False)
+    _open_interactive_process: InteractiveProcessOpener = field(repr=False)
 
     def log(
         self,
@@ -129,6 +148,20 @@ class ManagedTaskContext:
         completion_metadata: dict[str, object] | None = None,
     ) -> None:
         self._release_workspaces(cleanup, completion_metadata)
+
+    async def open_interactive_process(
+        self,
+        command: list[str],
+        workspace: Path,
+        work_dir: str = ".",
+        on_output: InteractiveOutputCallback | None = None,
+    ) -> InteractiveProcessSession:
+        return await self._open_interactive_process(
+            command,
+            workspace,
+            work_dir,
+            on_output,
+        )
 
 
 @dataclass(slots=True, frozen=True)

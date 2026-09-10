@@ -17,6 +17,8 @@ from app.platform.domain.task import TaskRecord
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.process_runner import ProcessRunner
 from app.platform.services.task_execution import (
+    InteractiveOutputCallback,
+    InteractiveProcessSession,
     ManagedTaskCancellationHandler,
     ManagedTaskContext,
     ManagedTaskExecutor,
@@ -553,6 +555,9 @@ class TaskService:
         task = self.task_store.try_start(task_id)
         if task is None:
             return
+        task_workspaces: set[Path] = set()
+        interactive_sessions: list[InteractiveProcessSession] = []
+        interactive_monitors: list[asyncio.Task[None]] = []
 
         def report_progress(percent: int, message: str, stream: str) -> None:
             nonlocal task
@@ -560,11 +565,57 @@ class TaskService:
 
         def create_workspace(workspace_name: str | None) -> Path:
             self._raise_if_cancel_requested(task_id)
-            return self.workspace_service.create_task_workspace(
+            workspace = self.workspace_service.create_task_workspace(
                 project_id,
                 task_id,
                 workspace_name=workspace_name,
             )
+            task_workspaces.add(workspace.resolve())
+            return workspace
+
+        async def open_interactive_process(
+            command: list[str],
+            workspace: Path,
+            work_dir: str,
+            on_output: InteractiveOutputCallback | None,
+        ) -> InteractiveProcessSession:
+            if not isinstance(command, list) or not command or not all(
+                isinstance(item, str) and item for item in command
+            ):
+                raise AppError("interactive command must contain non-empty strings")
+            if not isinstance(work_dir, str):
+                raise AppError("interactive work_dir must be a string")
+            if on_output is not None and not callable(on_output):
+                raise AppError("interactive on_output must be callable")
+            resolved_workspace = workspace.resolve()
+            if resolved_workspace not in task_workspaces:
+                raise AppError("interactive workspace must be created by this task")
+            cwd = self.workspace_service.resolve_work_dir_in_workspace(
+                resolved_workspace,
+                work_dir,
+            )
+            self._raise_if_cancel_requested(task_id)
+
+            def handle_output(message: str, stream: str) -> None:
+                self.log_service.append(task_id, message, stream=stream)
+                if on_output is not None:
+                    on_output(message, stream)
+
+            session = await self.process_runner.open_interactive_process(
+                command=command,
+                cwd=cwd,
+                on_output=handle_output,
+            )
+            interactive_sessions.append(session)
+            interactive_monitors.append(
+                asyncio.create_task(
+                    self._monitor_managed_interactive_session(task_id, session)
+                )
+            )
+            if self.task_store.require(task_id).cancel_requested:
+                await session.terminate()
+                raise CancellationRequested()
+            return session
 
         context = ManagedTaskContext(
             task_id=task_id,
@@ -592,6 +643,7 @@ class TaskService:
                     completion_metadata=completion_metadata,
                 )
             ),
+            _open_interactive_process=open_interactive_process,
         )
         try:
             self._raise_if_cancel_requested(task_id)
@@ -626,6 +678,14 @@ class TaskService:
             self._mark_failed(task, str(exc))
             task.progress = 100
         finally:
+            interactive_failure = await self._finish_managed_interactive_sessions(
+                task_id,
+                interactive_sessions,
+                interactive_monitors,
+            )
+            if interactive_failure is not None and task.status != TaskStatus.CANCELLED:
+                self._mark_failed(task, str(interactive_failure))
+                task.progress = 100
             self._finalize_with_cleanup(
                 task,
                 lambda finalized: self._finish_managed_task_workspaces(
@@ -641,6 +701,46 @@ class TaskService:
                 queue_workspace_cleanup_on_finalize=True,
                 preserve_workspace_on_success=preserve_workspace_on_success,
             )
+
+    async def _monitor_managed_interactive_session(
+        self,
+        task_id: UUID,
+        session: InteractiveProcessSession,
+    ) -> None:
+        while session.returncode is None:
+            try:
+                cancelled = self.task_store.require(task_id).cancel_requested
+            except Exception:
+                cancelled = True
+            if cancelled:
+                await session.terminate()
+                return
+            await asyncio.sleep(0.05)
+
+    async def _finish_managed_interactive_sessions(
+        self,
+        task_id: UUID,
+        sessions: list[InteractiveProcessSession],
+        monitors: list[asyncio.Task[None]],
+    ) -> Exception | None:
+        failure: Exception | None = None
+        for monitor in monitors:
+            monitor.cancel()
+        for session in reversed(sessions):
+            try:
+                await session.terminate()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                failure = failure or exc
+                logger.warning(
+                    "failed to terminate managed interactive process: %s",
+                    task_id,
+                    exc_info=True,
+                )
+        if monitors:
+            await asyncio.gather(*monitors, return_exceptions=True)
+        return failure
 
     @staticmethod
     def _validate_managed_task_result(result: object) -> None:

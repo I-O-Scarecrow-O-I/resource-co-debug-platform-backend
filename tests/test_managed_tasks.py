@@ -529,10 +529,19 @@ async def test_startup_recovers_persistently_failed_managed_workspace_cleanup(
             )
             completed = await _wait_for_terminal(service, created.id)
             await _wait_for_cleanup_pending(service, created.id)
-            for _ in range(100):
-                if attempts == 3:
+            for _ in range(200):
+                with service._background_lock:
+                    background_finished = (
+                        created.id not in service._background_futures
+                    )
+                if (
+                    background_finished
+                    and "failed to clean managed task workspace" in caplog.text
+                ):
                     break
                 await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("managed cleanup failure was not fully reported")
 
         task_root = project.root_path / "tasks" / str(created.id)
         assert completed.status == TaskStatus.SUCCEEDED

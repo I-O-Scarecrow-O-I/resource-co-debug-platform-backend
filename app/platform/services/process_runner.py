@@ -9,11 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
-from app.core.errors import CancellationRequested
+from app.core.errors import AppError, CancellationRequested
+from app.platform.services.task_execution import InteractiveProcessSession
 
 LogCallback = Callable[[str, str], None]
 CancelCheck = Callable[[], bool]
 ProcessStartedCallback = Callable[[asyncio.subprocess.Process], None]
+INTERACTIVE_OUTPUT_RECORD_LIMIT_BYTES = 1024 * 1024
+_CREATE_SUSPENDED = 0x00000004
 
 
 @dataclass(slots=True)
@@ -23,7 +26,214 @@ class ProcessResult:
     affinity_applied: bool = False
 
 
+class _ProcessRunnerInteractiveSession:
+    def __init__(
+        self,
+        runner: "ProcessRunner",
+        process: asyncio.subprocess.Process,
+        process_group: int | None,
+        readers: list[asyncio.Task[None]],
+    ) -> None:
+        self._runner = runner
+        self._process = process
+        self._process_group = process_group
+        self._readers = readers
+        self._write_lock = asyncio.Lock()
+        self._termination_lock = asyncio.Lock()
+        self._termination_task: asyncio.Task[None] | None = None
+        self._process_wait_task = asyncio.create_task(process.wait())
+        self._completion_task = asyncio.create_task(self._wait_and_cleanup())
+
+    @property
+    def returncode(self) -> int | None:
+        return self._process.returncode
+
+    async def write(self, data: str) -> None:
+        if not isinstance(data, str):
+            raise TypeError("interactive process input must be a string")
+        async with self._write_lock:
+            stdin = self._process.stdin
+            if (
+                stdin is None
+                or stdin.is_closing()
+                or self._process.returncode is not None
+            ):
+                raise RuntimeError("interactive process stdin is closed")
+            stdin.write(data.encode())
+            await stdin.drain()
+
+    async def wait(self) -> int:
+        return await asyncio.shield(self._completion_task)
+
+    async def terminate(self) -> None:
+        async with self._termination_lock:
+            if self._termination_task is None:
+                self._termination_task = asyncio.create_task(self._terminate_and_wait())
+            termination_task = self._termination_task
+
+        cancelled = False
+        while not termination_task.done():
+            try:
+                await asyncio.shield(termination_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        termination_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _terminate_and_wait(self) -> None:
+        if self._process.returncode is None:
+            await self._runner._terminate_process_group(
+                self._process,
+                self._process_group,
+            )
+        await asyncio.shield(self._completion_task)
+
+    async def _wait_and_cleanup(self) -> int:
+        exit_code: int | None = None
+        failure: BaseException | None = None
+        failure_traceback: TracebackType | None = None
+        try:
+            exit_code = await self._wait_for_process_and_output()
+        except BaseException as exc:
+            failure = exc
+            failure_traceback = exc.__traceback__
+
+        stdin = self._process.stdin
+        if stdin is not None:
+            stdin.close()
+        cleanup_cancelled = False
+        cleanup_failure: BaseException | None = None
+        try:
+            cleanup_cancelled = await self._runner._finish_process_cleanup(
+                self._process,
+                self._process_group,
+                self._readers,
+            )
+        except BaseException as exc:
+            cleanup_failure = exc
+        await asyncio.gather(self._process_wait_task, return_exceptions=True)
+        if stdin is not None:
+            try:
+                await stdin.wait_closed()
+            except OSError:
+                pass
+
+        if failure is not None:
+            if cleanup_failure is not None:
+                failure.add_note(f"process cleanup failed: {cleanup_failure!r}")
+            raise failure.with_traceback(failure_traceback)
+        if cleanup_failure is not None:
+            raise cleanup_failure
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
+        assert exit_code is not None
+        return exit_code
+
+    async def _wait_for_process_and_output(self) -> int:
+        active_readers = set(self._readers)
+        while not self._process_wait_task.done():
+            done, _ = await asyncio.wait(
+                {self._process_wait_task, *active_readers},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for reader in done.intersection(active_readers):
+                active_readers.remove(reader)
+                self._raise_output_failure(reader)
+
+        await asyncio.gather(*self._readers, return_exceptions=True)
+        for reader in self._readers:
+            self._raise_output_failure(reader)
+        return self._process_wait_task.result()
+
+    @staticmethod
+    def _raise_output_failure(reader: asyncio.Task[None]) -> None:
+        try:
+            reader.result()
+        except asyncio.CancelledError as exc:
+            raise AppError("interactive process output reader was cancelled") from exc
+        except AppError:
+            raise
+        except Exception as exc:
+            raise AppError(
+                f"interactive process output handling failed: {exc}"
+            ) from exc
+
+
 class ProcessRunner:
+    async def open_interactive_process(
+        self,
+        command: list[str],
+        cwd: Path,
+        on_output: LogCallback,
+    ) -> InteractiveProcessSession:
+        if not command:
+            raise ValueError("command must not be empty")
+        if not cwd.is_dir():
+            raise ValueError("cwd must be an existing directory")
+
+        process_options = (
+            {"start_new_session": True}
+            if os.name == "posix"
+            else {
+                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP
+                | _CREATE_SUSPENDED
+            }
+        )
+        process: asyncio.subprocess.Process | None = None
+        process_group: int | None = None
+        readers: list[asyncio.Task[None]] = []
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(cwd),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=INTERACTIVE_OUTPUT_RECORD_LIMIT_BYTES,
+                **process_options,
+            )
+            process_group = self._create_process_group(process.pid)
+            if os.name == "nt":
+                if process_group is None:
+                    raise AppError(
+                        "failed to assign interactive process to Windows job object"
+                    )
+                self._resume_windows_process(process.pid)
+            readers = [
+                asyncio.create_task(
+                    self._stream_interactive_output(
+                        process.stdout,
+                        "stdout",
+                        on_output,
+                    )
+                ),
+                asyncio.create_task(
+                    self._stream_interactive_output(
+                        process.stderr,
+                        "stderr",
+                        on_output,
+                    )
+                ),
+            ]
+            return _ProcessRunnerInteractiveSession(
+                self,
+                process,
+                process_group,
+                readers,
+            )
+        except BaseException as exc:
+            if process is not None:
+                try:
+                    await self._finish_process_cleanup(
+                        process,
+                        process_group,
+                        readers,
+                    )
+                except BaseException as cleanup_error:
+                    exc.add_note(f"process cleanup failed: {cleanup_error!r}")
+            raise
+
     async def run(
         self,
         command: list[str],
@@ -301,6 +511,26 @@ class ProcessRunner:
         kernel32.TerminateJobObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.TerminateJobObject(process_group, 1)
 
+    def _resume_windows_process(self, process_id: int) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        handle_type = ctypes.c_void_p
+        kernel32.OpenProcess.restype = handle_type
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+        kernel32.CloseHandle.argtypes = [handle_type]
+        ntdll.NtResumeProcess.argtypes = [handle_type]
+        ntdll.NtResumeProcess.restype = ctypes.c_long
+        process_handle = kernel32.OpenProcess(0x0800, False, process_id)
+        if not process_handle:
+            error_code = ctypes.get_last_error()
+            raise OSError(error_code, "failed to open suspended interactive process")
+        try:
+            status = ntdll.NtResumeProcess(process_handle)
+        finally:
+            kernel32.CloseHandle(process_handle)
+        if status != 0:
+            raise OSError(status, "failed to resume suspended interactive process")
+
     def _close_process_group(self, process_group: int | None) -> None:
         if process_group is not None and os.name == "nt":
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -326,4 +556,24 @@ class ProcessRunner:
             return
         while line := await stream.readline():
             on_log(line.decode(errors="replace").rstrip(), name)
+
+    async def _stream_interactive_output(
+        self,
+        stream: asyncio.StreamReader | None,
+        name: str,
+        on_output: LogCallback,
+    ) -> None:
+        if stream is None:
+            return
+        while True:
+            try:
+                line = await stream.readline()
+            except ValueError as exc:
+                raise AppError(
+                    "interactive process output record exceeds "
+                    f"{INTERACTIVE_OUTPUT_RECORD_LIMIT_BYTES} bytes"
+                ) from exc
+            if not line:
+                return
+            on_output(line.decode(errors="replace").rstrip("\r\n"), name)
 

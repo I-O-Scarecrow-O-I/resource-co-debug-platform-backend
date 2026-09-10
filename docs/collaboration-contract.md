@@ -80,6 +80,23 @@ The platform calls `co_debug.scheduler` as ordinary Python functions.
 
 Real build/debug commands are launched by the platform as controlled subprocesses.
 
+Long-lived interactive commands are opened only from a managed task workspace:
+
+```python
+workspace = context.create_workspace("debug")
+session = await context.open_interactive_process(
+    ["tool", "--interactive"],
+    workspace,
+    on_output=lambda message, stream: consume_output(stream, message),
+)
+await session.write("command\n")
+exit_code = await session.wait()
+```
+
+The module sees the `InteractiveProcessSession` protocol rather than
+`asyncio.subprocess.Process`. The platform owns process groups, task-log streaming, cancellation,
+termination, and cleanup; module code owns only its command protocol and output interpretation.
+
 ## 5. Task Input JSON
 
 Build task:
