@@ -57,13 +57,6 @@ def _create_task_service(
         task_store=task_store,
         log_service=log_service,
         process_runner=ProcessRunner(),
-
-        # B6 不使用调度功能，
-        # 所以测试中可以传 None。
-        scheduler_service=None,
-        schedule_execution_service=None,
-        schedule_comparison_service=None,
-
         default_timeout_seconds=20,
     )
 

@@ -107,19 +107,17 @@ class DependencyRepairBuildService:
             )
 
             return prepared
-
-        return await (
-            self.task_service.create_prepared_process_task(
-                module=BackendModuleName.CO_DEBUG,
-                project_id=request.project_id,
-                task_type=TaskType.BUILD,
-                prepare=prepare,
-                timeout_seconds=request.timeout_seconds,
-                metadata={
-                    "operation": "dependency_repair_build",
-                },
+        return await self.task_service.create_prepared_process_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=request.project_id,
+            task_type=TaskType.BUILD,
+            prepare=prepare,
+            timeout_seconds=request.timeout_seconds,
+            metadata={
+                 "operation": "dependency_repair_build",
+                     },
+            artifacts_on_success=True,
             )
-        )
 
     def _prepare_workspace(
         self,

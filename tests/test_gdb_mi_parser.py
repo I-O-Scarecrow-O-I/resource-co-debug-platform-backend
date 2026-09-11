@@ -562,3 +562,10 @@ def test_unterminated_string_raises():
         parse_mi_line(
             '~"hello'
         )
+def test_prompt_accepts_trailing_whitespace():
+    record = parse_mi_line("(gdb) ")
+
+    assert (
+        record.kind
+        == MiRecordKind.PROMPT
+    )
