@@ -55,17 +55,41 @@ class InteractiveDebugService:
         request: DebugTaskRequest,
     ) -> TaskRecord:
         if request.build_task_id is not None:
-            raise AppError(
-                "interactive debug from build task "
-                "requires managed source workspace support"
+            build_task = (
+                self.task_service
+                .require_task(
+                    request.build_task_id
+                )
             )
+
+            if (
+                build_task.project_id
+                != request.project_id
+                or build_task.task_type
+                != TaskType.BUILD
+            ):
+                raise AppError(
+                    "build_task_id must reference "
+                    "a build task in the same project"
+                )
+
+            if (
+                build_task.status
+                != TaskStatus.SUCCEEDED
+            ):
+                raise AppError(
+                    "build task must succeed "
+                    "before starting debug"
+                )
 
         logical_executable = (
             self.task_service
             .find_process_source_file(
                 project_id=request.project_id,
                 path=request.executable_path,
-                source_task_id=None,
+                 source_task_id=(
+                    request.build_task_id
+                ),
             )
         )
 
@@ -321,6 +345,9 @@ class InteractiveDebugService:
                 "interactive": True,
             },
             timeout_seconds=request.timeout_seconds,
+            source_task_id=(
+                request.build_task_id
+            ),
         )
 
     @staticmethod
