@@ -1,10 +1,10 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Self
+from typing import Annotated, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     naturalcc_connect_timeout_seconds: float = Field(default=5.0, gt=0)
     naturalcc_request_timeout_seconds: float = Field(default=30.0, gt=0)
     naturalcc_approve_execute: bool = False
-    allowed_cors_origins: list[str] = Field(
+    allowed_cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"]
     )
 

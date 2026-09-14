@@ -199,6 +199,7 @@ class TaskService:
         execute: ManagedTaskExecutor,
         metadata: dict | None = None,
         timeout_seconds: int | None = None,
+        source_task_id: UUID | None = None,
         total_timeout_seconds: int | float | None = None,
         cancellation_handler: ManagedTaskCancellationHandler | None = None,
         preserve_workspace_on_success: bool = False,
@@ -211,7 +212,7 @@ class TaskService:
         ``total_timeout_seconds`` bounds the complete executor only when provided.
         """
         self._ensure_accepting_tasks()
-        self.workspace_service.require_project(project_id)
+        source_workspace = self._resolve_process_source_workspace(project_id, source_task_id)
         if not self._is_async_executor(execute):
             raise AppError("execute must be async")
         if cancellation_handler is not None and not self._is_async_cancellation_handler(
@@ -237,6 +238,7 @@ class TaskService:
                     project_id=project_id,
                     execute=execute,
                     timeout_seconds=resolved_timeout,
+                    source_workspace=source_workspace,
                     total_timeout_seconds=total_timeout_seconds,
                     preserve_workspace_on_success=preserve_workspace_on_success,
                     workspace_completion_metadata_on_success=(
@@ -547,6 +549,7 @@ class TaskService:
         project_id: UUID,
         execute: ManagedTaskExecutor,
         timeout_seconds: int,
+        source_workspace: Path | None,
         total_timeout_seconds: int | float | None,
         preserve_workspace_on_success: bool,
         workspace_completion_metadata_on_success: dict[str, object] | None,
@@ -568,6 +571,7 @@ class TaskService:
             workspace = self.workspace_service.create_task_workspace(
                 project_id,
                 task_id,
+                source_path=source_workspace,
                 workspace_name=workspace_name,
             )
             task_workspaces.add(workspace.resolve())

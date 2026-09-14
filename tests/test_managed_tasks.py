@@ -3,13 +3,13 @@ import io
 import sqlite3
 import threading
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 import pytest
 from fastapi import UploadFile
 
-from app.core.errors import AppError
+from app.core.errors import AppError, NotFoundError
 from app.core.time import utc_now
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
@@ -121,6 +121,245 @@ async def test_managed_task_reports_progress_and_cleans_multiple_workspaces(tmp_
         assert messages[-1] == "task succeeded"
         assert len(workspaces) == 2
         await _wait_for_cleanup(project.root_path / "tasks" / str(created.id))
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_uses_project_source_when_source_task_id_is_omitted_or_none(
+    tmp_path,
+) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+    contents: list[str] = []
+
+    async def execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        workspace = context.create_workspace("workspace")
+        contents.append((workspace / "input.txt").read_text())
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    try:
+        omitted = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.SCHEDULE_EXPERIMENT,
+            command=["managed", "project-source-omitted"],
+            execute=execute,
+        )
+        explicit_none = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.SCHEDULE_EXPERIMENT,
+            command=["managed", "project-source-none"],
+            execute=execute,
+            source_task_id=None,
+        )
+
+        assert (await _wait_for_terminal(service, omitted.id)).status == TaskStatus.SUCCEEDED
+        assert (await _wait_for_terminal(service, explicit_none.id)).status == TaskStatus.SUCCEEDED
+        assert contents == ["source", "source"]
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_snapshots_preserved_source_workspace_and_keeps_source_on_cleanup(
+    tmp_path,
+) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+    target_workspace: Path | None = None
+
+    async def build_execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        workspace = context.create_workspace("workspace")
+        executable = workspace / "bin" / "program.exe"
+        executable.parent.mkdir()
+        executable.write_text("binary", encoding="utf-8")
+        (workspace / "artifact.txt").write_text("build artifact", encoding="utf-8")
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    async def managed_execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        nonlocal target_workspace
+        target_workspace = context.create_workspace("workspace")
+        assert (target_workspace / "bin" / "program.exe").read_text(encoding="utf-8") == "binary"
+        assert (target_workspace / "artifact.txt").read_text(encoding="utf-8") == "build artifact"
+        (target_workspace / "artifact.txt").write_text("managed copy", encoding="utf-8")
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    try:
+        build = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.BUILD,
+            command=["managed", "b6-build"],
+            execute=build_execute,
+            preserve_workspace_on_success=True,
+        )
+        assert (await _wait_for_terminal(service, build.id)).status == TaskStatus.SUCCEEDED
+        build_workspace = project.root_path / "tasks" / str(build.id) / "workspace"
+        assert (build_workspace / "artifact.txt").read_text(encoding="utf-8") == "build artifact"
+
+        managed = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.SCHEDULE_EXPERIMENT,
+            command=["managed", "b7-from-b6"],
+            execute=managed_execute,
+            source_task_id=build.id,
+        )
+        assert (await _wait_for_terminal(service, managed.id)).status == TaskStatus.SUCCEEDED
+        await _wait_for_cleanup(project.root_path / "tasks" / str(managed.id))
+
+        assert target_workspace is not None
+        assert target_workspace != build_workspace
+        assert (build_workspace / "artifact.txt").read_text(encoding="utf-8") == "build artifact"
+        assert (build_workspace / "bin" / "program.exe").is_file()
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_rejects_missing_source_task(tmp_path) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+
+    async def execute(_: ManagedTaskContext) -> ManagedTaskResult:
+        raise AssertionError("source task validation must run before execution")
+
+    try:
+        with pytest.raises(NotFoundError, match="task not found"):
+            await service.create_managed_task(
+                module=BackendModuleName.CO_DEBUG,
+                project_id=project.id,
+                task_type=TaskType.SCHEDULE_EXPERIMENT,
+                command=["managed", "missing-source"],
+                execute=execute,
+                source_task_id=uuid4(),
+            )
+        assert service.list_tasks() == []
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_rejects_cross_project_source_task(tmp_path) -> None:
+    service, workspace_service = _service(tmp_path)
+    source_project = await _create_project(workspace_service)
+    target_project = await _create_project(workspace_service)
+
+    async def source_execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        context.create_workspace("workspace")
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    async def execute(_: ManagedTaskContext) -> ManagedTaskResult:
+        raise AssertionError("source task validation must run before execution")
+
+    try:
+        source = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=source_project.id,
+            task_type=TaskType.BUILD,
+            command=["managed", "other-project-source"],
+            execute=source_execute,
+            preserve_workspace_on_success=True,
+        )
+        assert (await _wait_for_terminal(service, source.id)).status == TaskStatus.SUCCEEDED
+
+        with pytest.raises(
+            AppError,
+            match="source_task_id must reference a succeeded task in the same project",
+        ):
+            await service.create_managed_task(
+                module=BackendModuleName.CO_DEBUG,
+                project_id=target_project.id,
+                task_type=TaskType.SCHEDULE_EXPERIMENT,
+                command=["managed", "cross-project-source"],
+                execute=execute,
+                source_task_id=source.id,
+            )
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_rejects_nonterminal_source_task(tmp_path) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+    source_started = threading.Event()
+    release_source = threading.Event()
+
+    async def source_execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        context.create_workspace("workspace")
+        source_started.set()
+        await asyncio.to_thread(release_source.wait)
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    async def execute(_: ManagedTaskContext) -> ManagedTaskResult:
+        raise AssertionError("source task validation must run before execution")
+
+    try:
+        source = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.BUILD,
+            command=["managed", "running-source"],
+            execute=source_execute,
+            preserve_workspace_on_success=True,
+        )
+        assert await asyncio.to_thread(source_started.wait, 1)
+
+        with pytest.raises(
+            AppError,
+            match="source_task_id must reference a succeeded task in the same project",
+        ):
+            await service.create_managed_task(
+                module=BackendModuleName.CO_DEBUG,
+                project_id=project.id,
+                task_type=TaskType.SCHEDULE_EXPERIMENT,
+                command=["managed", "running-source-child"],
+                execute=execute,
+                source_task_id=source.id,
+            )
+
+        release_source.set()
+        assert (await _wait_for_terminal(service, source.id)).status == TaskStatus.SUCCEEDED
+    finally:
+        release_source.set()
+        await _close(service)
+
+
+@pytest.mark.asyncio
+async def test_managed_task_rejects_source_task_without_workspace(tmp_path) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+
+    async def source_execute(context: ManagedTaskContext) -> ManagedTaskResult:
+        context.create_workspace("workspace")
+        return ManagedTaskResult(status=TaskStatus.SUCCEEDED)
+
+    async def execute(_: ManagedTaskContext) -> ManagedTaskResult:
+        raise AssertionError("source task validation must run before execution")
+
+    try:
+        source = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.BUILD,
+            command=["managed", "cleaned-source"],
+            execute=source_execute,
+        )
+        assert (await _wait_for_terminal(service, source.id)).status == TaskStatus.SUCCEEDED
+        await _wait_for_cleanup(project.root_path / "tasks" / str(source.id))
+
+        with pytest.raises(AppError, match="build workspace does not exist"):
+            await service.create_managed_task(
+                module=BackendModuleName.CO_DEBUG,
+                project_id=project.id,
+                task_type=TaskType.SCHEDULE_EXPERIMENT,
+                command=["managed", "missing-source-workspace"],
+                execute=execute,
+                source_task_id=source.id,
+            )
     finally:
         await _close(service)
 

@@ -45,9 +45,29 @@ def test_naturalcc_settings_require_http_url(base_url: str) -> None:
     )
 
 
+def test_settings_parse_csv_cors_origins_from_env_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ALLOWED_CORS_ORIGINS", raising=False)
+    env_file = tmp_path / "backend.env"
+    env_file.write_text(
+        "ALLOWED_CORS_ORIGINS=https://frontend.example.invalid,http://localhost:3000\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.allowed_cors_origins == [
+        "https://frontend.example.invalid",
+        "http://localhost:3000",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_naturalcc_client_uses_expected_run_api_contract() -> None:
     requests: list[httpx.Request] = []
+    workspace = Path("O:/controlled/workspace")
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -69,7 +89,7 @@ async def test_naturalcc_client_uses_expected_run_api_contract() -> None:
 
     await client.health()
     await client.create_run(
-        workspace=Path("O:/controlled/workspace"),
+        workspace=workspace,
         request=request,
     )
     await client.approve("run-1", "write")
@@ -96,7 +116,7 @@ async def test_naturalcc_client_uses_expected_run_api_contract() -> None:
     }
     assert requests[5].url.params == httpx.QueryParams({"after": "7"})
     assert json.loads(requests[1].content) == {
-        "workspace": "O:\\controlled\\workspace",
+        "workspace": str(workspace),
         "goal": "Repair the failing test",
         "target_files": ["src/example.py"],
         "authorized_paths": [],

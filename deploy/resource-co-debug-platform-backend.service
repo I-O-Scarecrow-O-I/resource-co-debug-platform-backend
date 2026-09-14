@@ -1,0 +1,22 @@
+[Unit]
+Description=Resource Co-Debug Platform Backend
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=resource-co-debug
+Group=resource-co-debug
+WorkingDirectory=/opt/resource-co-debug-platform-backend
+Environment=APP_HOST=127.0.0.1
+Environment=APP_PORT=8000
+EnvironmentFile=/etc/resource-co-debug-platform-backend/backend.env
+ExecStart=/opt/resource-co-debug-platform-backend/.venv/bin/python -m uvicorn app.main:app --host ${APP_HOST} --port ${APP_PORT} --timeout-graceful-shutdown 30
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillMode=mixed
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
