@@ -72,7 +72,7 @@ class PlatformGdbTransport:
         command: list[str],
         workspace,
         work_dir: str = ".",
-    ) -> "PlatformGdbTransport":
+    ) -> PlatformGdbTransport:
         """
         在 A 管理的 Managed Task Workspace 中
         启动一个交互式进程。

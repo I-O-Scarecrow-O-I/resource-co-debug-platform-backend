@@ -1,7 +1,7 @@
-from app.modules.co_debug.dependency.project_parser import ProjectParser
-from app.modules.co_debug.dependency.makefile_parser import MakefileParser
 from app.modules.co_debug.dependency.dependency_analyzer import DependencyAnalyzer
 from app.modules.co_debug.dependency.dependency_detector import DependencyDetector
+from app.modules.co_debug.dependency.makefile_parser import MakefileParser
+from app.modules.co_debug.dependency.project_parser import ProjectParser
 
 
 def test_detect_missing_dependency(tmp_path):

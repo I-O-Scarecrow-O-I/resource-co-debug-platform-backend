@@ -39,7 +39,6 @@ from app.platform.services.workspace_service import (
     WorkspaceService,
 )
 
-
 BASE = (
     "/api/v1/modules/co-debug"
     "/debug/sessions"
@@ -573,10 +572,10 @@ def test_real_gdb_debug_api_end_to_end(
         # ---------------------------------
 
         response = client.get(
-            (
+
                 f"{BASE}/{task_id}"
                 "/stack-frames"
-            )
+
         )
 
         assert (
@@ -630,10 +629,10 @@ def test_real_gdb_debug_api_end_to_end(
         # ---------------------------------
 
         response = client.post(
-            (
+
                 f"{BASE}/{task_id}"
                 "/continue"
-            )
+
         )
 
         assert (

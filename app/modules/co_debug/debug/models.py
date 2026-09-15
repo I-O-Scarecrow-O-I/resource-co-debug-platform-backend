@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class MiRecordKind(str, Enum):
+class MiRecordKind(StrEnum):
     """
     GDB/MI 输出记录类型。
     """
@@ -87,7 +87,7 @@ class MiRecord:
         )
 
 
-class DebugSessionState(str, Enum):
+class DebugSessionState(StrEnum):
     """
     单个 GDB 调试会话的状态。
     """

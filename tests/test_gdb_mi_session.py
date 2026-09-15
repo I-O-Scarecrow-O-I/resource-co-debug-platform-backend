@@ -441,8 +441,8 @@ async def test_continue_next_and_step():
             )
 
             await _wait_until(
-                lambda: len(
-                    transport.sent
+                lambda expected_count=expected_count: len(
+                transport.sent
                 )
                 >= expected_count
             )

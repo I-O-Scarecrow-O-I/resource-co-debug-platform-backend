@@ -86,9 +86,7 @@ class DebugSessionService:
         self,
         task_id: UUID,
     ) -> DebugSessionResponse:
-        task = self._require_debug_task(
-            task_id
-        )
+        self._require_debug_task(task_id)
 
         active = (
             self.session_manager

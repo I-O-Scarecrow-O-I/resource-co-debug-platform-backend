@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DependencyAnalysisResponse(BaseModel):
@@ -27,9 +27,6 @@ class DependencyRepairResponse(BaseModel):
     repaired_content: str
 
     note: str
-
-from pydantic import BaseModel, Field
-
 
 class DependencyRepairBuildRequest(BaseModel):
     project_id: UUID

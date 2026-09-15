@@ -36,7 +36,6 @@ from app.platform.services.workspace_service import (
     WorkspaceService,
 )
 
-
 pytestmark = pytest.mark.skipif(
     shutil.which("gcc") is None
     or shutil.which("gdb") is None,
