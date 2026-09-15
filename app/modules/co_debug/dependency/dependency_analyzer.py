@@ -1,5 +1,5 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from app.modules.co_debug.dependency.models import (
     ActualDependency,

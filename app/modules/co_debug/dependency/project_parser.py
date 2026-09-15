@@ -2,7 +2,6 @@ from pathlib import Path
 
 from app.modules.co_debug.dependency.models import ProjectModel
 
-
 SOURCE_EXTENSIONS = {
     ".c",
     ".cc",

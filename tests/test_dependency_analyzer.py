@@ -1,5 +1,5 @@
-from app.modules.co_debug.dependency.project_parser import ProjectParser
 from app.modules.co_debug.dependency.dependency_analyzer import DependencyAnalyzer
+from app.modules.co_debug.dependency.project_parser import ProjectParser
 
 
 def test_dependency_analyzer(tmp_path):

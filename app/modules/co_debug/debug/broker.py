@@ -5,11 +5,11 @@ import queue
 import threading
 from concurrent.futures import Future
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 
-class DebugCommandKind(str, Enum):
+class DebugCommandKind(StrEnum):
     SET_ARGUMENTS = "set_arguments"
 
     INSERT_BREAKPOINT = "insert_breakpoint"
@@ -204,9 +204,7 @@ class DebugCommandBroker:
                         self._closed
                         and self._queue.empty()
                     ):
-                        raise (
-                            self._closed_error()
-                        )
+                        raise self._closed_error() from None
 
                 continue
 

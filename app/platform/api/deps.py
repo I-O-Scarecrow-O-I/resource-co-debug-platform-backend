@@ -7,18 +7,18 @@ from fastapi import Depends
 
 from app.core.config import Settings
 from app.core.config import get_settings as load_settings
-from app.modules.co_debug.services.debug_service import DebugSessionService
-from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
-from app.modules.co_debug.services.repair_build_service import (
-    DependencyRepairBuildService,
-)
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
 )
+from app.modules.co_debug.services.debug_service import DebugSessionService
+from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.interactive_debug_service import (
     InteractiveDebugService,
 )
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
+from app.modules.co_debug.services.repair_build_service import (
+    DependencyRepairBuildService,
+)
 from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
 from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
 from app.modules.co_debug.services.scheduler_service import SchedulerService

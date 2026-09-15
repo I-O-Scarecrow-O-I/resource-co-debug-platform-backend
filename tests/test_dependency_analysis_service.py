@@ -1,8 +1,8 @@
 import io
 from zipfile import ZipFile
 
-from fastapi import UploadFile
 import pytest
+from fastapi import UploadFile
 
 from app.modules.co_debug.services.dependency_service import (
     DependencyAnalysisService,

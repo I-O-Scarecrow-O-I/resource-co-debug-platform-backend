@@ -1,11 +1,10 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
 from app.modules.co_debug.dependency.models import (
     MakefileModel,
     MakeRule,
 )
-
 
 VARIABLE_ASSIGNMENT = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*\s*(?:=|:=|\+=|\?=|!=)"

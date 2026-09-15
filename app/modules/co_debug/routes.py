@@ -3,16 +3,34 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from app.modules.co_debug.schemas.debug import DebugSessionResponse
-from app.modules.co_debug.schemas.dependencies import DependencyAnalysisResponse,DependencyRepairBuildRequest,DependencyRepairResponse
+from app.modules.co_debug.schemas.debug import (
+    DebugArgumentsRequest,
+    DebugBreakpointRequest,
+    DebugBreakpointResponse,
+    DebugExpressionRequest,
+    DebugExpressionResponse,
+    DebugSessionResponse,
+    DebugSessionStateResponse,
+    DebugStackFramesResponse,
+    DebugWaitForStopRequest,
+)
+from app.modules.co_debug.schemas.dependencies import (
+    DependencyAnalysisResponse,
+    DependencyRepairBuildRequest,
+    DependencyRepairResponse,
+)
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.repair_build_service import DependencyRepairBuildService
-from app.modules.co_debug.schemas.debug import DebugArgumentsRequest,DebugBreakpointRequest, DebugBreakpointResponse,DebugExpressionRequest,DebugExpressionResponse,DebugSessionResponse,DebugSessionStateResponse, DebugStackFramesResponse,DebugWaitForStopRequest
-from app.platform.api.deps import get_debug_service, get_dependency_service, get_dependency_repair_build_service,get_metric_service
+from app.platform.api.deps import (
+    get_debug_service,
+    get_dependency_repair_build_service,
+    get_dependency_service,
+    get_metric_service,
+)
 from app.platform.schemas.common import ApiResponse
-from app.platform.schemas.tasks import DebugTaskRequest,TaskResponse
+from app.platform.schemas.tasks import DebugTaskRequest, TaskResponse
 
 router = APIRouter()
 
