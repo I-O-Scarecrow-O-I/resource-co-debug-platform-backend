@@ -95,9 +95,10 @@ Set-Location O:\Code\naturalcc-cs
 批准 `write`；仅在 NaturalCC 运行于隔离容器或受限操作系统账号时，才可显式设为 `true` 批准
 `execute`。write 和 execute 是整个 run 的风险授权；首次待批的 `tool_call_id` 仅用于拒绝陈旧审批，
 不表示同一风险的后续工具调用会逐个重新审批。因此 `execute=true` 会放宽该 run 余下的 execute 操作。
-`GET /api/health` 与 `GET /api/v1/modules/code-generation/health` 仅检查服务存活和
-连通性；上游没有版本、工具或 capabilities 查询 API，不能将 health 当作协议兼容性门禁。协议不匹配
-会在任务运行时 fail-closed：后端取消远端 run 并将任务标记为失败。
+后端健康检查为 `GET http://127.0.0.1:8000/api/v1/health`；NaturalCC 自身健康检查为
+`GET http://127.0.0.1:7860/api/health`。`GET /api/v1/modules/code-generation/health` 仅检查后端与
+NaturalCC 的连通性；上游没有版本、工具或 capabilities 查询 API，不能将 health 当作协议兼容性门禁。
+协议不匹配会在任务运行时 fail-closed：后端取消远端 run 并将任务标记为失败。
 
 `waiting_approval` 时，后端只会按当前 `pending_approval.tool_call.id` 批准首个待批风险，并在批准后
 再次调用 `/run`；`code_completion` 属于 write 工具，`vulnerability_detection` 只读扫描无需审批，

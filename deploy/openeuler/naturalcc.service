@@ -1,0 +1,36 @@
+[Unit]
+Description=NaturalCC Agent API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naturalcc-agent
+Group=naturalcc-agent
+SupplementaryGroups=naturalcc-workspace
+StateDirectory=naturalcc-agent
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/naturalcc-agent
+EnvironmentFile=/etc/naturalcc-agent/naturalcc.env
+Environment=CODE_AGENT_DB=/var/lib/naturalcc-agent/agent_runtime.db
+Environment=PYTHONPATH=/opt/naturalcc
+Environment=HOME=/var/lib/naturalcc-agent
+Environment=XDG_CONFIG_HOME=/var/lib/naturalcc-agent/config
+Environment=XDG_CACHE_HOME=/var/lib/naturalcc-agent/cache
+Environment=PATH=/opt/naturalcc-runtime/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/usr/bin/test -r ${LIBCLANG_PATH}
+ExecStartPre=/usr/bin/test -r /opt/naturalcc/code_agent/resources/deepseek_v3_tokenizer/tokenizer.json
+ExecStart=/opt/naturalcc-runtime/venv/bin/python -m code_agent.agent_web_api --host 127.0.0.1 --port 7860
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+ReadOnlyPaths=/opt/naturalcc
+ReadWritePaths=/var/lib/resource-co-debug-platform-backend/workspaces
+
+[Install]
+WantedBy=multi-user.target

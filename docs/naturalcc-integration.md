@@ -28,15 +28,17 @@ metadata、日志或文档示例。后端通过 `NATURALCC_BASE_URL`、连接/�
 启动后端后先验证：
 
 ```powershell
-Invoke-WebRequest http://127.0.0.1:8000/api/health
+Invoke-WebRequest http://127.0.0.1:8000/api/v1/health
+Invoke-WebRequest http://127.0.0.1:7860/api/health
 Invoke-WebRequest http://127.0.0.1:8000/api/v1/modules/code-generation/health
 ```
 
-第一个 `/api/health` 返回成功是后端冒烟通过；第二个接口确认 NaturalCC 存活和连通。上游没有版本、
-工具或 capabilities 查询 API，因此这两个 health 端点都不能作为 c619262 协议门禁，更不能证明工具
-可用或算法能力。兼容性只能在创建并运行任务时确认：若 `waiting_approval` 快照不符合 c619262 的
-`pending_approval.risk` 与 `pending_approval.tool_call.id` 合同，或风险不被允许，后端会 fail-closed，
-尽力取消远端 run 并将本地任务标记为 FAILED。
+第一个 `8000/api/v1/health` 返回成功是后端冒烟通过；第二个 `7860/api/health` 确认 NaturalCC
+自身存活；第三个接口确认后端与 NaturalCC 的连通。上游没有版本、工具或 capabilities 查询 API，
+因此这些 health 端点都不能作为 c619262 协议门禁，更不能证明工具可用或算法能力。兼容性只能在创建
+并运行任务时确认：若 `waiting_approval` 快照不符合 c619262 的 `pending_approval.risk` 与
+`pending_approval.tool_call.id` 合同，或风险不被允许，后端会 fail-closed，尽力取消远端 run 并将
+本地任务标记为 FAILED。
 
 Windows 本地会话应如上设置 `LIBCLANG_PATH`。当前已使用
 `O:\Code_dependency\tools\libclang-18.1.1\clang\native\libclang.dll` 让最新 NaturalCC 的 CParser
