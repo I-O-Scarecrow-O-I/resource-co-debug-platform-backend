@@ -92,29 +92,44 @@ async def test_naturalcc_client_uses_expected_run_api_contract() -> None:
         workspace=workspace,
         request=request,
     )
-    await client.approve("run-1", "write")
+    await client.approve("run-1", "write", "call-1", timeout_seconds=5)
+    await client.approve("run-2", "write")
     await client.run("run-1", timeout_seconds=60)
     await client.get_run("run-1", timeout_seconds=4)
-    await client.events("run-1", after=7)
+    await client.events("run-1", after=7, timeout_seconds=6)
     await client.cancel("run-1", timeout_seconds=3)
 
     assert [(item.method, item.url.path) for item in requests] == [
         ("GET", "/api/health"),
         ("POST", "/api/agent/runs"),
         ("POST", "/api/agent/runs/run-1/approve"),
+        ("POST", "/api/agent/runs/run-2/approve"),
         ("POST", "/api/agent/runs/run-1/run"),
         ("GET", "/api/agent/runs/run-1"),
         ("GET", "/api/agent/runs/run-1/events"),
         ("POST", "/api/agent/runs/run-1/cancel"),
     ]
-    assert json.loads(requests[2].content) == {"risk": "write"}
-    assert requests[3].extensions["timeout"] == {
+    assert json.loads(requests[2].content) == {"risk": "write", "tool_call_id": "call-1"}
+    assert json.loads(requests[3].content) == {"risk": "write"}
+    assert requests[2].extensions["timeout"] == {
+        "connect": 2,
+        "read": 5,
+        "write": 5,
+        "pool": 5,
+    }
+    assert requests[4].extensions["timeout"] == {
         "connect": 2,
         "read": 60,
         "write": 60,
         "pool": 60,
     }
-    assert requests[5].url.params == httpx.QueryParams({"after": "7"})
+    assert requests[6].url.params == httpx.QueryParams({"after": "7"})
+    assert requests[6].extensions["timeout"] == {
+        "connect": 2,
+        "read": 6,
+        "write": 6,
+        "pool": 6,
+    }
     assert json.loads(requests[1].content) == {
         "workspace": str(workspace),
         "goal": "Repair the failing test",
@@ -124,6 +139,35 @@ async def test_naturalcc_client_uses_expected_run_api_contract() -> None:
         "thread_id": "thread-1",
         "capabilities": {"codegraph": False},
     }
+
+
+@pytest.mark.asyncio
+async def test_naturalcc_client_maps_approval_conflict_to_safe_error() -> None:
+    client = NaturalCCClient(
+        base_url="http://naturalcc.test",
+        connect_timeout_seconds=2,
+        request_timeout_seconds=10,
+        transport=httpx.MockTransport(lambda _: httpx.Response(409, json={})),
+    )
+
+    with pytest.raises(NaturalCCClientError, match="NaturalCC service request failed"):
+        await client.approve("run-1", "write", "call-1")
+
+
+@pytest.mark.asyncio
+async def test_naturalcc_client_maps_approval_network_failure_to_safe_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection lost", request=request)
+
+    client = NaturalCCClient(
+        base_url="http://naturalcc.test",
+        connect_timeout_seconds=2,
+        request_timeout_seconds=10,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(NaturalCCClientError, match="NaturalCC service request failed"):
+        await client.approve("run-1", "write", "call-1")
 
 
 @pytest.mark.asyncio

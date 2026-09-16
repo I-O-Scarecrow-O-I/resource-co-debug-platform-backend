@@ -32,7 +32,9 @@ class FakeNaturalCCService:
         self.state = state
         self.created_requests = []
         self.approvals: list[tuple[str, str]] = []
+        self.approval_tool_call_ids: list[str | None] = []
         self.cancelled_runs: list[str] = []
+        self.call_order: list[str] = []
         self.create_started = threading.Event()
         self.allow_create = threading.Event()
         self.block_create = False
@@ -40,6 +42,13 @@ class FakeNaturalCCService:
         self.allow_run = threading.Event()
         self.block_run = False
         self.run_timeouts: list[float | None] = []
+        self.approve_started = threading.Event()
+        self.allow_approve = threading.Event()
+        self.block_approve = False
+        self.approve_timeouts: list[float | None] = []
+        self.run_states: list[dict] = []
+        self.run_exception: Exception | None = None
+        self.run_exception_raised = threading.Event()
         self.fail_approve = False
         self.approve_exception: Exception | None = None
         self.cancel_exception: Exception | None = None
@@ -48,9 +57,15 @@ class FakeNaturalCCService:
         self.get_run_exception: Exception | None = None
         self.cancel_timeouts: list[float | None] = []
         self.get_run_timeouts: list[float | None] = []
+        self.get_run_states: list[dict] = []
         self.event_responses: dict[int, dict] = {}
+        self.events_exception: Exception | None = None
+        self.event_afters: list[int] = []
+        self.event_timeouts: list[float | None] = []
+        self.network_timeouts: list[float | None] = []
 
     async def create_run(self, *, workspace: Path, request) -> dict:
+        self.call_order.append("create")
         self.create_started.set()
         if self.block_create:
             await asyncio.to_thread(self.allow_create.wait)
@@ -59,25 +74,58 @@ class FakeNaturalCCService:
         self.created_requests.append((workspace, request))
         return {"run_id": "naturalcc-run-1"}
 
-    async def approve(self, run_id: str, risk: str) -> dict:
+    async def approve(
+        self,
+        run_id: str,
+        risk: str,
+        tool_call_id: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        self.call_order.append("approve")
+        self.approve_timeouts.append(timeout_seconds)
+        self.network_timeouts.append(timeout_seconds)
+        self.approve_started.set()
+        if self.block_approve:
+            await asyncio.to_thread(self.allow_approve.wait)
         if self.approve_exception is not None:
             raise self.approve_exception
         if self.fail_approve:
             raise NaturalCCClientError("request failed")
         self.approvals.append((run_id, risk))
+        self.approval_tool_call_ids.append(tool_call_id)
         return {"status": "running"}
 
     async def run(self, run_id: str, *, timeout_seconds: float | None = None) -> dict:
+        self.call_order.append("run")
         self.run_timeouts.append(timeout_seconds)
+        self.network_timeouts.append(timeout_seconds)
         self.run_started.set()
         if self.block_run:
             await asyncio.to_thread(self.allow_run.wait)
-        if self.state["status"] == "completed":
+        if self.run_exception is not None:
+            self.run_exception_raised.set()
+            raise self.run_exception
+        state = self.run_states.pop(0) if self.run_states else self.state
+        if state["status"] == "completed":
             workspace = self.created_requests[-1][0]
             (workspace / "generated.txt").write_text("generated", encoding="utf-8")
-        return self.state
+        return state
 
-    async def events(self, run_id: str, *, after: int = 0) -> dict:
+    async def events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> dict:
+        self.event_afters.append(after)
+        self.event_timeouts.append(timeout_seconds)
+        self.network_timeouts.append(timeout_seconds)
+        if self.events_exception is not None:
+            if self.run_exception is not None:
+                await asyncio.to_thread(self.run_exception_raised.wait)
+            raise self.events_exception
         if after in self.event_responses:
             return self.event_responses[after]
         if after >= 1:
@@ -104,10 +152,12 @@ class FakeNaturalCCService:
         return {"status": "cancelled"}
 
     async def get_run(self, run_id: str, *, timeout_seconds: float | None = None) -> dict:
+        self.call_order.append("get_run")
         self.get_run_timeouts.append(timeout_seconds)
+        self.network_timeouts.append(timeout_seconds)
         if self.get_run_exception is not None:
             raise self.get_run_exception
-        return self.state
+        return self.get_run_states.pop(0) if self.get_run_states else self.state
 
 
 @pytest.fixture
@@ -188,7 +238,44 @@ def test_code_generation_request_rejects_uncontrolled_fields_and_paths(code_gene
         assert response.status_code == 422
 
 
-def test_code_generation_task_succeeds_preserves_artifacts_and_approves_write_only(
+def test_completed_run_exception_is_consumed_when_events_request_fails(
+    code_generation_api,
+) -> None:
+    _, _, _, _, _, code_generation_task_service, remote = code_generation_api
+    remote.run_exception = RuntimeError("run failed")
+    remote.events_exception = NaturalCCClientError("events failed")
+
+    class Context:
+        def raise_if_cancelled(self) -> None:
+            return None
+
+    async def poll() -> None:
+        loop = asyncio.get_running_loop()
+        unhandled: list[dict] = []
+        previous_handler = loop.get_exception_handler()
+
+        def capture_unhandled(_, context: dict) -> None:
+            unhandled.append(context)
+
+        loop.set_exception_handler(capture_unhandled)
+        try:
+            with pytest.raises(NaturalCCClientError, match="events failed"):
+                await code_generation_task_service._run_and_poll(
+                    Context(),
+                    "naturalcc-run-1",
+                    deadline=loop.time() + 1,
+                )
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+        assert remote.run_exception_raised.is_set()
+        assert unhandled == []
+
+    asyncio.run(poll())
+
+
+def test_code_generation_task_succeeds_preserves_artifacts_without_preapproval(
     code_generation_api,
 ) -> None:
     client, _, project, task_store, log_service, _, remote = code_generation_api
@@ -214,7 +301,7 @@ def test_code_generation_task_succeeds_preserves_artifacts_and_approves_write_on
         "final_answer": "finished with phase-two-api-key",
         "changed_files": ["generated.txt"],
     }
-    assert remote.approvals == [("naturalcc-run-1", "write")]
+    assert remote.approvals == []
     _, remote_request = remote.created_requests[0]
     assert remote_request.budget["max_seconds"] == 10
     assert "authorized_paths" not in remote_request.model_dump()
@@ -461,9 +548,16 @@ def test_cancel_during_success_finalization_uses_confirmed_cleanup_not_success_r
     assert task_store.artifacts_are_available(stored.id) is False
 
 
-def test_client_failure_after_create_run_cancels_remote_run(code_generation_api) -> None:
+def test_deferred_approval_network_failure_cancels_remote_run(code_generation_api) -> None:
     client, _, project, _, _, _, remote = code_generation_api
     remote.fail_approve = True
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        }
+    ]
     response = client.post(
         "/api/v1/modules/code-generation/tasks",
         json=_request_payload(str(project.id)),
@@ -478,9 +572,39 @@ def test_client_failure_after_create_run_cancels_remote_run(code_generation_api)
     _wait_for_workspace_cleanup(project.root_path / "tasks" / task_id)
 
 
+def test_deferred_approval_conflict_cancels_remote_run(code_generation_api) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    remote.approve_exception = NaturalCCClientError("approval conflict")
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        }
+    ]
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json=_request_payload(str(project.id)),
+    )
+    task_id = response.json()["data"]["id"]
+    task = _wait_for_terminal(client, task_id)
+
+    assert task["status"] == "FAILED"
+    assert task["error"] == "NaturalCC service request failed"
+    assert remote.cancelled_runs == ["naturalcc-run-1"]
+    _wait_for_workspace_cleanup(project.root_path / "tasks" / task_id)
+
+
 def test_unknown_failure_after_create_run_cancels_remote_run(code_generation_api) -> None:
     client, _, project, _, _, _, remote = code_generation_api
     remote.approve_exception = RuntimeError("unexpected remote response")
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        }
+    ]
     response = client.post(
         "/api/v1/modules/code-generation/tasks",
         json=_request_payload(str(project.id)),
@@ -515,9 +639,28 @@ def test_cancel_failure_does_not_change_platform_cancellation(code_generation_ap
     _wait_for_workspace_cleanup(project.root_path / "tasks" / task_id)
 
 
-def test_execute_approval_requires_explicit_opt_in(code_generation_api) -> None:
+def test_deferred_execute_approval_requires_explicit_opt_in(code_generation_api) -> None:
     client, _, project, _, _, code_generation_task_service, remote = code_generation_api
     code_generation_task_service.approve_execute = True
+    remote.run_states = [
+        {"status": "waiting_approval"},
+        {"status": "waiting_approval"},
+        {
+            "status": "completed",
+            "final_answer": "finished with phase-two-api-key",
+            "working_state": {"changed_files": ["generated.txt"]},
+        },
+    ]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        },
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "execute", "tool_call": {"id": "execute-1"}},
+        }
+    ]
 
     response = client.post(
         "/api/v1/modules/code-generation/tasks",
@@ -529,6 +672,164 @@ def test_execute_approval_requires_explicit_opt_in(code_generation_api) -> None:
         ("naturalcc-run-1", "write"),
         ("naturalcc-run-1", "execute"),
     ]
+    assert remote.approval_tool_call_ids == ["write-1", "execute-1"]
+
+
+def test_deferred_write_approval_runs_before_approval_and_reuses_polling_state(
+    code_generation_api,
+) -> None:
+    client, _, project, _, log_service, _, remote = code_generation_api
+    remote.run_states = [
+        {"status": "waiting_approval"},
+        {
+            "status": "completed",
+            "final_answer": "finished with phase-two-api-key",
+            "working_state": {"changed_files": ["generated.txt"]},
+        },
+    ]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        }
+    ]
+    remote.event_responses = {
+        0: {"events": [{"sequence": 1, "type": "tool.started"}]},
+        1: {"events": [{"sequence": 2, "type": "tool.finished"}]},
+    }
+
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json={**_request_payload(str(project.id)), "timeout_seconds": 10},
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+
+    assert task["status"] == "SUCCEEDED"
+    assert remote.call_order.index("run") < remote.call_order.index("approve")
+    assert remote.approvals == [("naturalcc-run-1", "write")]
+    assert remote.approval_tool_call_ids == ["write-1"]
+    assert remote.call_order.count("run") == 2
+    assert remote.event_afters[:2] == [0, 1]
+    assert len(remote.run_timeouts) == 2
+    assert 0 < remote.run_timeouts[1] <= remote.run_timeouts[0] <= 10
+    assert remote.get_run_timeouts and remote.approve_timeouts and remote.event_timeouts
+    assert all(timeout is not None and timeout > 0 for timeout in remote.network_timeouts)
+    assert remote.event_timeouts[1] <= remote.event_timeouts[0]
+    assert remote.get_run_timeouts[0] <= remote.event_timeouts[1]
+    assert remote.approve_timeouts[0] <= remote.get_run_timeouts[0]
+    assert remote.run_timeouts[1] <= remote.approve_timeouts[0]
+    assert [
+        event.progress
+        for event in log_service.history(response.json()["data"]["id"])
+        if event.progress is not None
+    ] == [5, 55, 70, 100]
+
+
+def test_deferred_execute_approval_is_rejected_without_opt_in(code_generation_api) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "execute", "tool_call": {"id": "execute-1"}},
+        }
+    ]
+
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json=_request_payload(str(project.id)),
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+
+    assert task["status"] == "FAILED"
+    assert task["error"] == "NaturalCC deferred approval for risk execute is not allowed"
+    assert remote.approvals == []
+    assert remote.cancelled_runs == ["naturalcc-run-1"]
+
+
+def test_cancel_during_deferred_approval_does_not_start_another_run(code_generation_api) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    remote.block_approve = True
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "write", "tool_call": {"id": "write-1"}},
+        }
+    ]
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json=_request_payload(str(project.id)),
+    )
+    task_id = response.json()["data"]["id"]
+    assert remote.approve_started.wait(timeout=2)
+
+    cancelled = client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert cancelled.status_code == 200
+    remote.allow_approve.set()
+    task = _wait_for_terminal(client, task_id)
+
+    assert task["status"] == "CANCELLED"
+    assert remote.call_order.count("run") == 1
+
+
+@pytest.mark.parametrize(
+    ("approval_state", "error"),
+    [
+        (
+            {
+                "status": "waiting_approval",
+                "pending_approval": {"risk": "write", "tool_call": {}},
+            },
+            "NaturalCC deferred approval is invalid: tool call id is missing",
+        ),
+        (
+            {"status": "completed"},
+            "NaturalCC deferred approval changed before it could be approved",
+        ),
+    ],
+)
+def test_malformed_or_stale_deferred_approval_fails_closed_and_cancels_remote_run(
+    code_generation_api,
+    approval_state: dict,
+    error: str,
+) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [approval_state]
+
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json=_request_payload(str(project.id)),
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+
+    assert task["status"] == "FAILED"
+    assert task["error"] == error
+    assert remote.approvals == []
+    assert remote.cancelled_runs == ["naturalcc-run-1"]
+
+
+def test_deferred_non_write_or_execute_approval_fails_closed(code_generation_api) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    remote.run_states = [{"status": "waiting_approval"}]
+    remote.get_run_states = [
+        {
+            "status": "waiting_approval",
+            "pending_approval": {"risk": "network", "tool_call": {"id": "network-1"}},
+        }
+    ]
+
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks",
+        json=_request_payload(str(project.id)),
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+
+    assert task["status"] == "FAILED"
+    assert task["error"] == "NaturalCC deferred approval for risk network is not allowed"
+    assert remote.approvals == []
+    assert remote.cancelled_runs == ["naturalcc-run-1"]
 
 
 def test_cancel_retries_then_confirms_remote_terminal_state(code_generation_api) -> None:

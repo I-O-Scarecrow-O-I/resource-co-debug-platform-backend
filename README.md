@@ -80,22 +80,33 @@ deployments require a pub/sub backend.
 
 ## NaturalCC 接入
 
-NaturalCC 是独立的 Python 3.12 服务，固定使用 `O:\Code\naturalcc-ncc3` 的 commit
-`31997c7`；后端保持 Python 3.11，且不修改 NaturalCC。先在 NaturalCC 服务进程环境中设置
-模型密钥（本后端请求、`.env` 和示例均不接收或保存密钥），然后启动服务：
+NaturalCC 是独立的 Python 3.12 服务，必须使用 `O:\Code\naturalcc-cs` 中不早于
+`ncc3@c619262` 的 Agent API；这是 deferred approval 协议的硬性最低版本，后端不提供 legacy
+fallback，且不修改 NaturalCC。先在 NaturalCC 服务进程环境中设置模型密钥（本后端请求、`.env`
+和示例均不接收或保存密钥），然后启动服务：
 
 ```powershell
-Set-Location O:\Code\naturalcc-ncc3
+$env:LIBCLANG_PATH = 'O:\Code_dependency\tools\libclang-18.1.1\clang\native\libclang.dll'
+Set-Location O:\Code\naturalcc-cs
 & O:\Code_dependency\python_envs\naturalcc-code-agent-py312\Scripts\python.exe -m code_agent.agent_web_api --host 127.0.0.1 --port 7860
 ```
 
 后端 `.env` 只配置 `NATURALCC_BASE_URL`、超时和 `NATURALCC_APPROVE_EXECUTE=false`。默认仅
 批准 `write`；仅在 NaturalCC 运行于隔离容器或受限操作系统账号时，才可显式设为 `true` 批准
-`execute`。启动后以 `GET /api/health` 冒烟验证后端，再以
-`GET /api/v1/modules/code-generation/health` 验证连通性。
+`execute`。write 和 execute 是整个 run 的风险授权；首次待批的 `tool_call_id` 仅用于拒绝陈旧审批，
+不表示同一风险的后续工具调用会逐个重新审批。因此 `execute=true` 会放宽该 run 余下的 execute 操作。
+`GET /api/health` 与 `GET /api/v1/modules/code-generation/health` 仅检查服务存活和
+连通性；上游没有版本、工具或 capabilities 查询 API，不能将 health 当作协议兼容性门禁。协议不匹配
+会在任务运行时 fail-closed：后端取消远端 run 并将任务标记为失败。
 
-固定 commit 已自带且由 Git 跟踪 `tokenizer.json` 与 `tokenizer_config.json`；模型权重尚未下载。
-当前 Windows 环境还缺少 LLVM/libclang 18，因此 C/C++ 解析尚未验收。
+`waiting_approval` 时，后端只会按当前 `pending_approval.tool_call.id` 批准首个待批风险，并在批准后
+再次调用 `/run`；`code_completion` 属于 write 工具，`vulnerability_detection` 只读扫描无需审批，
+其 `.analyze`/`.fix` 变体属于 execute，只有显式开启上述配置才会批准。
+
+最低版本基线已自带且由 Git 跟踪 `tokenizer.json` 与 `tokenizer_config.json`；模型权重尚未下载。
+当前 Windows 环境可用上述会话级 `LIBCLANG_PATH` 加载 libclang 18.1.1；最新 NaturalCC 的 CParser
+已成功解析 `test/test-skills/vuln.c`（`parsed=True`、5 个 keys）。这只证明本地库加载和样例解析，
+不等同于 Agent 或模型端到端验收。
 本后端只承担集成和任务生命周期。算法质量及“漏洞不超过 2 个/100 行”由模块一交付方验收，当前
 没有由后端保证该指标的稳定机器契约。详见 `docs/naturalcc-integration.md`。
 

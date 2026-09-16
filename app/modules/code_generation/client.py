@@ -65,11 +65,22 @@ class NaturalCCClient:
             timeout_seconds=timeout_seconds,
         )
 
-    async def approve(self, run_id: str, risk: str) -> dict[str, Any]:
+    async def approve(
+        self,
+        run_id: str,
+        risk: str,
+        tool_call_id: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        payload = {"risk": risk}
+        if tool_call_id is not None:
+            payload["tool_call_id"] = tool_call_id
         return await self._request(
             "POST",
             f"/api/agent/runs/{_path_segment(run_id)}/approve",
-            json={"risk": risk},
+            json=payload,
+            timeout_seconds=timeout_seconds,
         )
 
     async def get_run(
@@ -84,11 +95,18 @@ class NaturalCCClient:
             timeout_seconds=timeout_seconds,
         )
 
-    async def events(self, run_id: str, *, after: int = 0) -> dict[str, Any]:
+    async def events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/api/agent/runs/{_path_segment(run_id)}/events",
             params={"after": after},
+            timeout_seconds=timeout_seconds,
         )
 
     async def cancel(

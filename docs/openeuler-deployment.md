@@ -9,7 +9,8 @@
 - 后端使用 Python 3.11，运行在独立虚拟环境：
   `/opt/resource-co-debug-platform-backend/.venv`。
 - NaturalCC 使用独立的 Python 3.12 服务和独立虚拟环境；后端仅通过
-  `NATURALCC_BASE_URL` 访问它。
+  `NATURALCC_BASE_URL` 访问它。部署版本必须不早于 `ncc3@c619262`；health 只验证存活，实际
+  deferred approval 协议会在任务运行时 fail-closed，不存在 legacy fallback。
 - NaturalCC 的模型凭据只能设置在 NaturalCC 服务环境中，不能写入后端
   `backend.env`、任务 metadata、HTTP 请求或日志。
 - 任务 API 可执行调用方提供的命令，禁止直接暴露到公网。仅应部署在可信网络内，或置于提供
@@ -129,7 +130,8 @@ sudo systemd-analyze verify /etc/systemd/system/resource-co-debug-platform-backe
 - [ ] 目标发行版、仓库、Python 3.11/3.12、GDB、编译器及其包版本已记录。
 - [ ] systemd unit 通过 `systemd-analyze verify`，并以 `resource-co-debug` 用户运行。
 - [ ] 运行时目录权限允许任务创建、日志写入和 SQLite 持久化，发布目录不可由运行账号修改。
-- [ ] 后端健康检查和 NaturalCC 连通检查均通过；后端环境文件不包含模型凭据。
+- [ ] 后端健康检查和 NaturalCC 连通检查均通过；后端环境文件不包含模型凭据；使用
+  `waiting_approval` 实测 c619262 deferred approval 的 write/execute 策略。
 - [ ] 上传、编译、调试、取消和子进程回收在目标机账户与 SELinux/安全策略下实测通过。
 - [ ] 真实 GDB/编译工具链和 NaturalCC Python 3.12 环境分别验收，不以 Windows 或开发机结果替代。
 - [ ] journald 查询、备份、升级与回滚流程已演练。

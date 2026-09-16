@@ -52,8 +52,20 @@ class NaturalCCService:
     ) -> dict[str, Any]:
         return await self._client.run(run_id, timeout_seconds=timeout_seconds)
 
-    async def approve(self, run_id: str, risk: str) -> dict[str, Any]:
-        return await self._client.approve(run_id, risk)
+    async def approve(
+        self,
+        run_id: str,
+        risk: str,
+        tool_call_id: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._client.approve(
+            run_id,
+            risk,
+            tool_call_id,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def get_run(
         self,
@@ -63,8 +75,18 @@ class NaturalCCService:
     ) -> dict[str, Any]:
         return await self._client.get_run(run_id, timeout_seconds=timeout_seconds)
 
-    async def events(self, run_id: str, *, after: int = 0) -> dict[str, Any]:
-        return await self._client.events(run_id, after=after)
+    async def events(
+        self,
+        run_id: str,
+        *,
+        after: int = 0,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return await self._client.events(
+            run_id,
+            after=after,
+            timeout_seconds=timeout_seconds,
+        )
 
     async def cancel(
         self,

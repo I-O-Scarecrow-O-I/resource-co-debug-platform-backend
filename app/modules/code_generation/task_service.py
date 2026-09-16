@@ -184,21 +184,10 @@ class CodeGenerationTaskService:
                 context.merge_metadata({"naturalcc_run_id": remote_run_id})
                 context.raise_if_cancelled()
 
-                approvals = ["write"]
-                if self.approve_execute:
-                    approvals.append("execute")
-                for risk in approvals:
-                    await self.naturalcc_service.approve(remote_run_id, risk)
-                    context.raise_if_cancelled()
-
-                remaining_timeout_seconds = max(
-                    0.1,
-                    deadline - asyncio.get_running_loop().time(),
-                )
                 state = await self._run_and_poll(
                     context,
                     remote_run_id,
-                    timeout_seconds=remaining_timeout_seconds,
+                    deadline=deadline,
                 )
                 if not self._state_is_terminal(state):
                     original_state = dict(state)
@@ -289,27 +278,90 @@ class CodeGenerationTaskService:
         context: ManagedTaskContext,
         run_id: str,
         *,
-        timeout_seconds: float,
+        deadline: float,
     ) -> dict[str, Any]:
-        run_task = asyncio.create_task(
-            self.naturalcc_service.run(run_id, timeout_seconds=timeout_seconds)
-        )
         after = 0
         progress = 5
-        try:
-            while not run_task.done():
-                context.raise_if_cancelled()
-                events = await self.naturalcc_service.events(run_id, after=after)
-                after, progress = self._report_events(context, events, after, progress)
-                await asyncio.sleep(0.25)
-            state = await run_task
-            events = await self.naturalcc_service.events(run_id, after=after)
-            self._report_events(context, events, after, progress)
-            return state
-        finally:
-            if not run_task.done():
-                run_task.cancel()
+        while True:
+            context.raise_if_cancelled()
+            run_task = asyncio.create_task(
+                self.naturalcc_service.run(
+                    run_id,
+                    timeout_seconds=self._remaining_timeout_seconds(deadline),
+                )
+            )
+            try:
+                while not run_task.done():
+                    context.raise_if_cancelled()
+                    events = await self.naturalcc_service.events(
+                        run_id,
+                        after=after,
+                        timeout_seconds=self._remaining_timeout_seconds(deadline),
+                    )
+                    context.raise_if_cancelled()
+                    after, progress = self._report_events(context, events, after, progress)
+                    await asyncio.sleep(
+                        min(0.25, max(0, deadline - asyncio.get_running_loop().time()))
+                    )
+                state = await run_task
+            finally:
+                if not run_task.done():
+                    run_task.cancel()
                 await asyncio.gather(run_task, return_exceptions=True)
+            context.raise_if_cancelled()
+            events = await self.naturalcc_service.events(
+                run_id,
+                after=after,
+                timeout_seconds=self._remaining_timeout_seconds(deadline),
+            )
+            context.raise_if_cancelled()
+            after, progress = self._report_events(context, events, after, progress)
+            if state.get("status") != "waiting_approval":
+                return state
+
+            context.raise_if_cancelled()
+            approval_state = await self.naturalcc_service.get_run(
+                run_id,
+                timeout_seconds=self._remaining_timeout_seconds(deadline),
+            )
+            context.raise_if_cancelled()
+            risk, tool_call_id = self._pending_approval(approval_state)
+            if risk == "write" or (risk == "execute" and self.approve_execute):
+                context.raise_if_cancelled()
+                await self.naturalcc_service.approve(
+                    run_id,
+                    risk,
+                    tool_call_id,
+                    timeout_seconds=self._remaining_timeout_seconds(deadline),
+                )
+                context.raise_if_cancelled()
+                continue
+            raise AppError(f"NaturalCC deferred approval for risk {risk} is not allowed")
+
+    @staticmethod
+    def _remaining_timeout_seconds(deadline: float) -> float:
+        remaining_timeout_seconds = deadline - asyncio.get_running_loop().time()
+        if remaining_timeout_seconds <= 0:
+            raise TimeoutError
+        return remaining_timeout_seconds
+
+    @staticmethod
+    def _pending_approval(state: dict[str, Any]) -> tuple[str, str]:
+        if state.get("status") != "waiting_approval":
+            raise AppError("NaturalCC deferred approval changed before it could be approved")
+        pending_approval = state.get("pending_approval")
+        if not isinstance(pending_approval, dict):
+            raise AppError("NaturalCC deferred approval is invalid: pending approval is missing")
+        risk = pending_approval.get("risk")
+        if not isinstance(risk, str) or not risk:
+            raise AppError("NaturalCC deferred approval is invalid: risk is missing")
+        tool_call = pending_approval.get("tool_call")
+        if not isinstance(tool_call, dict):
+            raise AppError("NaturalCC deferred approval is invalid: tool call is missing")
+        tool_call_id = tool_call.get("id")
+        if not isinstance(tool_call_id, str) or not tool_call_id:
+            raise AppError("NaturalCC deferred approval is invalid: tool call id is missing")
+        return risk, tool_call_id
 
     @staticmethod
     def _report_events(
@@ -374,7 +426,12 @@ class CodeGenerationTaskService:
                     "changed_files": CodeGenerationTaskService._changed_files(state),
                 },
             )
-        if status in {"paused", "waiting_approval"}:
+        if status == "waiting_approval":
+            return ManagedTaskResult(
+                status=TaskStatus.FAILED,
+                error="NaturalCC deferred approval was not resolved safely",
+            )
+        if status == "paused":
             return ManagedTaskResult(
                 status=TaskStatus.FAILED,
                 error=(
