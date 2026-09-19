@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     naturalcc_request_timeout_seconds: float = Field(default=30.0, gt=0)
     naturalcc_approve_execute: bool = False
     allowed_cors_origins: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["http://localhost:3000", "http://localhost:5173"]
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
     )
 
     model_config = SettingsConfigDict(

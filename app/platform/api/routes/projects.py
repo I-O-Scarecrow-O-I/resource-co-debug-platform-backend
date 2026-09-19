@@ -11,7 +11,19 @@ from app.platform.services.workspace_service import WorkspaceService
 router = APIRouter()
 
 
-@router.post("", response_model=ApiResponse[ProjectResponse])
+PROJECT_UPLOAD_RESPONSES = {
+    413: {
+        "model": ApiResponse[None],
+        "description": "Project upload exceeds the configured size limit.",
+    }
+}
+
+
+@router.post(
+    "",
+    response_model=ApiResponse[ProjectResponse],
+    responses=PROJECT_UPLOAD_RESPONSES,
+)
 async def upload_project(
     archive: Annotated[UploadFile, File(description="Zip archive containing source project")],
     workspace_service: Annotated[WorkspaceService, Depends(get_workspace_service)],

@@ -21,6 +21,16 @@ from app.platform.services.task_service import TaskService
 router = APIRouter()
 
 
+ARTIFACT_DOWNLOAD_RESPONSE = {
+    "description": "Binary task artifact download.",
+    "content": {
+        "application/octet-stream": {
+            "schema": {"type": "string", "format": "binary"},
+        }
+    },
+}
+
+
 @router.post("/build", response_model=ApiResponse[TaskResponse])
 async def create_build_task(
     request: BuildTaskRequest,
@@ -93,14 +103,22 @@ async def list_task_artifacts(
     )
 
 
-@router.get("/{task_id}/artifacts/{artifact_path:path}")
+@router.get(
+    "/{task_id}/artifacts/{artifact_path:path}",
+    response_class=FileResponse,
+    responses={200: ARTIFACT_DOWNLOAD_RESPONSE},
+)
 async def download_task_artifact(
     task_id: UUID,
     artifact_path: str,
     task_service: Annotated[TaskService, Depends(get_task_service)],
 ) -> FileResponse:
     artifact = task_service.resolve_task_artifact(task_id, artifact_path)
-    return FileResponse(artifact, filename=artifact.name)
+    return FileResponse(
+        artifact,
+        media_type="application/octet-stream",
+        filename=artifact.name,
+    )
 
 
 @router.post("/{task_id}/cancel", response_model=ApiResponse[TaskResponse])

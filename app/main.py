@@ -28,6 +28,17 @@ from app.platform.services.log_service import LogStreamOverflow
 from app.platform.services.task_service import TaskService
 from app.platform.services.workspace_service import WorkspaceService
 
+APP_ERROR_RESPONSES = {
+    400: {
+        "model": ApiResponse[None],
+        "description": "Application error response.",
+    },
+    404: {
+        "model": ApiResponse[None],
+        "description": "Application error response.",
+    },
+}
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -70,6 +81,7 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="B/S backend foundation for resource-coordinated debugging.",
         lifespan=lifespan,
+        responses=APP_ERROR_RESPONSES,
     )
     app.include_router(api_router, prefix="/api/v1")
 

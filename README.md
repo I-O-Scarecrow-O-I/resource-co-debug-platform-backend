@@ -49,6 +49,22 @@ Default URL: `http://localhost:8000`
 
 The reusable local environment is documented in `docs/environment.md`.
 
+## Frontend API Contract
+
+The frontend handoff is [docs/frontend-api.md](docs/frontend-api.md). The generated static schema is
+[docs/openapi.json](docs/openapi.json); FastAPI also serves the current runtime schema at
+`/openapi.json` and interactive documentation at `/docs` and `/redoc`.
+
+Regenerate the checked-in schema after an API change, then verify it before committing:
+
+```bash
+python scripts/export_openapi.py
+python scripts/export_openapi.py --check
+```
+
+On the current Windows shared environment, the equivalent interpreter is
+`O:\Code_dependency\python_envs\resource-co-debug-py311\Scripts\python.exe`.
+
 ## Log Streaming Deployment Constraint
 
 SQLite-backed log history can be read across instances, but WebSocket real-time fan-out is

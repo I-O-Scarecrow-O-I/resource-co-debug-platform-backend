@@ -25,6 +25,7 @@ def test_naturalcc_settings_are_server_controlled_with_safe_defaults(
     monkeypatch.delenv("NATURALCC_CONNECT_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("NATURALCC_REQUEST_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("NATURALCC_APPROVE_EXECUTE", raising=False)
+    monkeypatch.delenv("ALLOWED_CORS_ORIGINS", raising=False)
 
     settings = Settings(_env_file=None)
 
@@ -32,6 +33,11 @@ def test_naturalcc_settings_are_server_controlled_with_safe_defaults(
     assert settings.naturalcc_connect_timeout_seconds == 5
     assert settings.naturalcc_request_timeout_seconds == 30
     assert settings.naturalcc_approve_execute is False
+    assert settings.allowed_cors_origins == [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
 
 @pytest.mark.parametrize("base_url", ["", "ftp://127.0.0.1:7860", "127.0.0.1:7860"])
@@ -52,7 +58,8 @@ def test_settings_parse_csv_cors_origins_from_env_file(
     monkeypatch.delenv("ALLOWED_CORS_ORIGINS", raising=False)
     env_file = tmp_path / "backend.env"
     env_file.write_text(
-        "ALLOWED_CORS_ORIGINS=https://frontend.example.invalid,http://localhost:3000\n",
+        "ALLOWED_CORS_ORIGINS=https://frontend.example.invalid,http://localhost:3000,"
+        "http://127.0.0.1:5173\n",
         encoding="utf-8",
     )
 
@@ -61,6 +68,7 @@ def test_settings_parse_csv_cors_origins_from_env_file(
     assert settings.allowed_cors_origins == [
         "https://frontend.example.invalid",
         "http://localhost:3000",
+        "http://127.0.0.1:5173",
     ]
 
 

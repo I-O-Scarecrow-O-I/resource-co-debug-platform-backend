@@ -120,6 +120,7 @@ def test_succeeded_build_artifacts_survive_service_rebuild(artifact_api, tmp_pat
         download_response = client.get(f"/api/v1/tasks/{task_id}/artifacts/nested/a-output.txt")
         assert download_response.status_code == 200
         assert download_response.content == b"alpha"
+        assert download_response.headers["content-type"] == "application/octet-stream"
         assert download_response.headers["content-disposition"].startswith(
             'attachment; filename="a-output.txt"'
         )
