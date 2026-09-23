@@ -824,6 +824,16 @@ class GdbMiSession:
                         "GDB/MI output: "
                         f"{message.text}"
                     ) from exc
+                
+                if (
+                    record.kind
+                    == MiRecordKind.UNKNOWN
+                ):
+                    self._target_output.append(
+                        record.raw
+                    )
+
+                    continue
 
                 self._handle_record(
                     record

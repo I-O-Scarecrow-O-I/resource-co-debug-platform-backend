@@ -21,7 +21,12 @@ from app.modules.co_debug.services.interactive_debug_service import (
 )
 from app.platform.api.deps import (
     get_debug_service,
+    get_interactive_debug_service,
     get_task_service,
+)
+from app.platform.domain.enums import (
+    BackendModuleName,
+    TaskType,
 )
 from app.platform.services.log_service import (
     TaskLogService,
@@ -39,10 +44,9 @@ from app.platform.services.workspace_service import (
     WorkspaceService,
 )
 
-BASE = (
-    "/api/v1/modules/co-debug"
-    "/debug/sessions"
-)
+DEBUG_BASE = "/api/v1/modules/co-debug/debug"
+BASE = f"{DEBUG_BASE}/sessions"
+CANDIDATES = f"{DEBUG_BASE}/candidates"
 
 
 pytestmark = pytest.mark.skipif(
@@ -170,6 +174,67 @@ async def _create_project(
     return project
 
 
+async def _create_candidate_project(
+    workspace_service,
+    *,
+    filename: str,
+):
+    source = (
+        '#include <stdio.h>\n'
+        'int main(void) {\n'
+        '    puts("candidate");\n'
+        '    return 0;\n'
+        '}\n'
+    )
+
+    archive = io.BytesIO()
+
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr(
+            "main.c",
+            source,
+        )
+
+    archive.seek(0)
+
+    return await workspace_service.create_from_archive(
+        UploadFile(
+            file=archive,
+            filename=filename,
+        )
+    )
+
+
+async def _create_candidate_build(
+    task_service: TaskService,
+    *,
+    project_id,
+    metadata: dict | None = None,
+    command: list[str] | None = None,
+):
+    return await task_service.create_process_task(
+        module=BackendModuleName.CO_DEBUG,
+        project_id=project_id,
+        task_type=TaskType.BUILD,
+        command=(
+            command
+            or [
+                "sh",
+                "-c",
+                (
+                    "gcc -g -O0 -o app main.c && "
+                    "printf '#!/bin/sh\nexit 0\n' > helper.sh && "
+                    "chmod +x helper.sh && "
+                    "printf 'plain\n' > note.txt"
+                ),
+            ]
+        ),
+        metadata=metadata or {},
+        timeout_seconds=5,
+        artifacts_on_success=True,
+    )
+
+
 def _wait_for_ready(
     client: TestClient,
     task_id: str,
@@ -295,12 +360,196 @@ def test_debug_api_routes_are_registered():
         f"{BASE}/{{task_id}}/evaluate",
         f"{BASE}/{{task_id}}/stack-frames",
         f"{BASE}/{{task_id}}/close",
+        CANDIDATES,
     }
 
     assert (
         expected
         <= paths
     )
+
+
+def test_debug_candidates_returns_only_retained_elf_executables(
+    tmp_path,
+):
+    (
+        task_service,
+        workspace_service,
+        _,
+        debug_service,
+    ) = _services(
+        tmp_path
+    )
+
+    first_project = asyncio.run(
+        _create_candidate_project(
+            workspace_service,
+            filename="candidate-a.zip",
+        )
+    )
+    second_project = asyncio.run(
+        _create_candidate_project(
+            workspace_service,
+            filename="candidate-b.zip",
+        )
+    )
+
+    repair_build = asyncio.run(
+        _create_candidate_build(
+            task_service,
+            project_id=first_project.id,
+            metadata={
+                "operation": "dependency_repair_build",
+            },
+        )
+    )
+
+    regular_build = asyncio.run(
+        _create_candidate_build(
+            task_service,
+            project_id=second_project.id,
+        )
+    )
+
+    failed_build = asyncio.run(
+        _create_candidate_build(
+            task_service,
+            project_id=first_project.id,
+            command=[
+                "sh",
+                "-c",
+                "exit 7",
+            ],
+        )
+    )
+
+    app = create_app()
+
+    interactive_service = InteractiveDebugService(
+        task_service=task_service,
+        session_manager=DebugSessionManager(),
+    )
+
+    app.dependency_overrides[
+        get_debug_service
+    ] = lambda: debug_service
+
+    app.dependency_overrides[
+        get_interactive_debug_service
+    ] = lambda: interactive_service
+
+    app.dependency_overrides[
+        get_task_service
+    ] = lambda: task_service
+
+    client = TestClient(
+        app
+    )
+
+    try:
+        repair_completed = _wait_for_task_terminal(
+            client,
+            str(repair_build.id),
+        )
+        regular_completed = _wait_for_task_terminal(
+            client,
+            str(regular_build.id),
+        )
+        failed_completed = _wait_for_task_terminal(
+            client,
+            str(failed_build.id),
+        )
+
+        assert repair_completed["status"] == "SUCCEEDED"
+        assert regular_completed["status"] == "SUCCEEDED"
+        assert failed_completed["status"] == "FAILED"
+
+        response = client.get(
+            CANDIDATES
+        )
+
+        assert response.status_code == 200
+
+        candidates = response.json()["data"]
+        by_task = {
+            item["build_task_id"]: item
+            for item in candidates
+        }
+
+        assert str(repair_build.id) in by_task
+        assert str(regular_build.id) in by_task
+        assert str(failed_build.id) not in by_task
+
+        repair_candidate = by_task[
+            str(repair_build.id)
+        ]
+
+        assert repair_candidate["project_id"] == str(
+            first_project.id
+        )
+        assert repair_candidate["build_kind"] == "repair-build"
+        assert repair_candidate["executables"] == [
+            {
+                "name": "app",
+                "executable_path": "app",
+            }
+        ]
+
+        regular_candidate = by_task[
+            str(regular_build.id)
+        ]
+        assert regular_candidate["build_kind"] == "build"
+        assert regular_candidate["executables"] == [
+            {
+                "name": "app",
+                "executable_path": "app",
+            }
+        ]
+
+        response = client.get(
+            CANDIDATES,
+            params={
+                "project_id": str(first_project.id),
+            },
+        )
+
+        assert response.status_code == 200
+        filtered = response.json()["data"]
+        assert [
+            item["build_task_id"]
+            for item in filtered
+        ] == [
+            str(repair_build.id)
+        ]
+
+        # Candidate discovery must stop exposing a build as soon as
+        # its retained artifact workspace disappears.
+        workspace_service.cleanup_task_workspaces(
+            first_project.id,
+            repair_build.id,
+        )
+
+        response = client.get(
+            CANDIDATES,
+            params={
+                "project_id": str(first_project.id),
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["data"] == []
+
+    finally:
+        client.close()
+        app.dependency_overrides.clear()
+
+        asyncio.run(
+            task_service.shutdown(
+                grace_seconds=1
+            )
+        )
+
+        task_service.close_resources_when_idle()
 
 
 def test_real_gdb_debug_api_end_to_end(

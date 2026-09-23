@@ -880,3 +880,72 @@ async def test_delete_breakpoint_updates_state():
 
     finally:
         await session.close()
+@pytest.mark.asyncio
+async def test_target_stream_is_preserved():
+    transport = FakeGdbTransport()
+
+    session = await _start_session(
+        transport
+    )
+
+    try:
+        transport.emit(
+            '@"program output\\n"'
+        )
+
+        await _wait_until(
+            lambda: (
+                session.target_output
+                == (
+                    "program output\n",
+                )
+            )
+        )
+
+        assert (
+            session.target_output
+            == (
+                "program output\n",
+            )
+        )
+
+    finally:
+        await session.close()
+
+@pytest.mark.asyncio
+async def test_raw_inferior_stdout_is_preserved():
+    transport = FakeGdbTransport()
+
+    session = await _start_session(
+        transport
+    )
+
+    try:
+        transport.emit(
+            "x = 5"
+        )
+
+        transport.emit(
+            "y = 3"
+        )
+
+        await _wait_until(
+            lambda: (
+                session.target_output
+                == (
+                    "x = 5",
+                    "y = 3",
+                )
+            )
+        )
+
+        assert (
+            session.target_output
+            == (
+                "x = 5",
+                "y = 3",
+            )
+        )
+
+    finally:
+        await session.close()

@@ -7,6 +7,7 @@ from app.modules.co_debug.schemas.debug import (
     DebugArgumentsRequest,
     DebugBreakpointRequest,
     DebugBreakpointResponse,
+    DebugBuildCandidate,
     DebugExpressionRequest,
     DebugExpressionResponse,
     DebugSessionResponse,
@@ -21,12 +22,16 @@ from app.modules.co_debug.schemas.dependencies import (
 )
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
+from app.modules.co_debug.services.interactive_debug_service import (
+    InteractiveDebugService,
+)
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.repair_build_service import DependencyRepairBuildService
 from app.platform.api.deps import (
     get_debug_service,
     get_dependency_repair_build_service,
     get_dependency_service,
+    get_interactive_debug_service,
     get_metric_service,
 )
 from app.platform.schemas.common import ApiResponse
@@ -79,6 +84,26 @@ async def repair_dependencies(
 ) -> ApiResponse[DependencyRepairResponse]:
     return ApiResponse.ok(
         dependency_service.repair(project_id)
+    )
+
+
+@router.get(
+    "/debug/candidates",
+    response_model=ApiResponse[
+        list[DebugBuildCandidate]
+    ],
+)
+async def list_debug_candidates(
+    interactive_debug_service: Annotated[
+        InteractiveDebugService,
+        Depends(get_interactive_debug_service),
+    ],
+    project_id: UUID | None = None,
+) -> ApiResponse[list[DebugBuildCandidate]]:
+    return ApiResponse.ok(
+        interactive_debug_service.list_candidates(
+            project_id=project_id
+        )
     )
 
 @router.get("/debug/sessions/{task_id}", response_model=ApiResponse[DebugSessionResponse])

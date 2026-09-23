@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.platform.domain.enums import TaskStatus
+
+
+class DebugExecutableCandidate(BaseModel):
+    name: str
+    executable_path: str
+
+
+class DebugBuildCandidate(BaseModel):
+    project_id: UUID
+    build_task_id: UUID
+    build_kind: str
+    created_at: datetime
+    executables: list[DebugExecutableCandidate] = Field(
+        default_factory=list
+    )
 
 
 class DebugSessionResponse(BaseModel):

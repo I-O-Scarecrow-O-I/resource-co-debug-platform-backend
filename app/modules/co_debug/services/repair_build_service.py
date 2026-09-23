@@ -157,7 +157,8 @@ class DependencyRepairBuildService:
         # B3
         actual_dependencies = (
             self.dependency_analyzer.analyze(
-                project
+                project,
+                makefile_model,
             )
         )
 
