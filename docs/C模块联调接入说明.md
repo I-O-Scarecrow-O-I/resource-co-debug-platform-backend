@@ -18,6 +18,9 @@ C模块负责技术指标（4）中的多核心、多任务调度和FIFO/优化�
 
 ## 3. 当前调用入口
 
+如果测试用例维护者已将三套代码及`debug-workloads.json`放入一个ZIP，前端可使用
+`POST /api/v1/modules/co-debug/debug/comparisons`。此入口由后端生成可重复执行的GDB批处理作业；具体输入见`C模块批处理调试输入说明.md`。
+
 ### 3.1 单方案调度实验
 
 ```text
@@ -315,5 +318,6 @@ task_result["result"]["average_improvement_rate"]
 
 - `docs/C模块调度与对比实验使用说明.md`
 - `docs/C模块内部调度负载与演示说明.md`
+- `docs/C模块批处理调试输入说明.md`
 - `docs/collaboration-contract.md`
 - `benchmarks/scheduler-workloads.json`

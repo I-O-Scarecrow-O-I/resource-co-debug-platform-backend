@@ -1,4 +1,13 @@
+from pathlib import PurePosixPath
+from uuid import UUID
+
+from pydantic import ValidationError
+
 from app.core.errors import AppError
+from app.modules.co_debug.schemas.debug_workloads import (
+    DebugComparisonRequest,
+    DebugWorkloadManifest,
+)
 from app.modules.co_debug.services.schedule_comparison_service import ScheduleComparisonService
 from app.modules.co_debug.services.schedule_execution_service import ScheduleExecutionService
 from app.modules.co_debug.services.scheduler_service import SchedulerService
@@ -9,6 +18,8 @@ from app.platform.schemas.tasks import (
     DebugTaskRequest,
     ScheduleComparisonRequest,
     ScheduleExperimentRequest,
+    ScheduleWorkloadSpec,
+    TaskExecutionSpec,
 )
 from app.platform.services.task_execution import (
     ManagedTaskContext,
@@ -91,6 +102,8 @@ class CoDebugTaskService:
         self,
         request: ScheduleExperimentRequest,
     ) -> TaskRecord:
+        self._require_build_task(request.project_id, request.build_task_id)
+
         async def execute(context: ManagedTaskContext) -> ManagedTaskResult:
             context.report_progress(10, "schedule experiment started")
             plan = self.scheduler_service.create_plan(
@@ -131,12 +144,15 @@ class CoDebugTaskService:
             execute=execute,
             metadata=request.metadata,
             timeout_seconds=request.timeout_seconds,
+            source_task_id=request.build_task_id,
         )
 
     async def create_schedule_comparison(
         self,
         request: ScheduleComparisonRequest,
     ) -> TaskRecord:
+        self._require_build_task(request.project_id, request.build_task_id)
+
         async def execute(context: ManagedTaskContext) -> ManagedTaskResult:
             context.report_progress(5, "schedule comparison started")
             summary = await self.schedule_comparison_service.compare(
@@ -170,7 +186,89 @@ class CoDebugTaskService:
             execute=execute,
             metadata=request.metadata,
             timeout_seconds=request.timeout_seconds,
+            source_task_id=request.build_task_id,
         )
+
+    async def create_debug_schedule_comparison(
+        self, request: DebugComparisonRequest
+    ) -> TaskRecord:
+        manifest_path = self._safe_relative_path(request.manifest_path)
+        raw_manifest = self.task_service.read_project_source_text(
+            project_id=request.project_id, path=manifest_path
+        )
+        try:
+            manifest = DebugWorkloadManifest.model_validate_json(raw_manifest)
+        except ValidationError as exc:
+            raise AppError("invalid debug workload manifest") from exc
+
+        self._require_build_task(request.project_id, request.build_task_id)
+        workloads: list[ScheduleWorkloadSpec] = []
+        for workload in manifest.workloads:
+            names = [job.name for job in workload.jobs]
+            if len(names) != len(set(names)):
+                raise AppError(f"debug job names must be unique in {workload.name}")
+            work_dir = self._safe_relative_path(workload.work_dir)
+            tasks: list[TaskExecutionSpec] = []
+            for job in workload.jobs:
+                executable = self._safe_relative_path(job.executable_path)
+                project_path = str(PurePosixPath(work_dir) / executable)
+                found = self.task_service.find_process_source_file(
+                    project_id=request.project_id,
+                    path=project_path,
+                    source_task_id=request.build_task_id,
+                )
+                if found is None:
+                    raise AppError(f"debug executable does not exist: {project_path}")
+                tasks.append(
+                    TaskExecutionSpec(
+                        name=job.name,
+                        command=self._batch_gdb_command(executable, job.breakpoint, job.args),
+                        estimated_ms=job.estimated_ms,
+                        metadata={"debug_workload": workload.name},
+                    )
+                )
+            workloads.append(
+                ScheduleWorkloadSpec(name=workload.name, work_dir=work_dir, tasks=tasks)
+            )
+
+        return await self.create_schedule_comparison(
+            ScheduleComparisonRequest(
+                project_id=request.project_id,
+                build_task_id=request.build_task_id,
+                workloads=workloads,
+                core_ids=request.core_ids,
+                timeout_seconds=request.timeout_seconds,
+                metadata={"debug_workload_manifest": manifest_path},
+            )
+        )
+
+    @staticmethod
+    def _safe_relative_path(value: str) -> str:
+        path = PurePosixPath(value)
+        if not value or "\\" in value or ":" in value or path.is_absolute() or ".." in path.parts:
+            raise AppError("debug workload paths must be relative to the project")
+        return str(path)
+
+    @staticmethod
+    def _batch_gdb_command(executable: str, breakpoint: str, args: list[str]) -> list[str]:
+        return [
+            "gdb", "--nx", "--quiet", "--batch", "--return-child-result",
+            "-ex", "set pagination off",
+            "-ex", f"break {breakpoint}",
+            "-ex", "run",
+            "-ex", "disable breakpoints",
+            "-ex", "continue",
+            "--args", f"./{executable}", *args,
+        ]
+
+    def _require_build_task(self, project_id: UUID, build_task_id: UUID | None) -> None:
+        if build_task_id is None:
+            return
+        task = self.task_service.require_task(build_task_id)
+        if task.project_id != project_id or task.task_type != TaskType.BUILD:
+            raise AppError("build_task_id must reference a build task in the same project")
+        if task.status != TaskStatus.SUCCEEDED:
+            raise AppError("build task must succeed before scheduling")
 
     @staticmethod
     def _gdb_command(executable: str, args: list[str]) -> list[str]:

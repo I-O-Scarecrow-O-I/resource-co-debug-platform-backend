@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "workloads": [
+    {
+      "name": "case-1",
+      "work_dir": "case-1",
+      "jobs": [
+        {"name": "case-1-short", "executable_path": "build/app", "breakpoint": "main", "args": ["short"]},
+        {"name": "case-1-long", "executable_path": "build/app", "breakpoint": "main", "args": ["long"]}
+      ]
+    },
+    {
+      "name": "case-2",
+      "work_dir": "case-2",
+      "jobs": [
+        {"name": "case-2-short", "executable_path": "build/app", "breakpoint": "main", "args": ["short"]},
+        {"name": "case-2-long", "executable_path": "build/app", "breakpoint": "main", "args": ["long"]}
+      ]
+    },
+    {
+      "name": "case-3",
+      "work_dir": "case-3",
+      "jobs": [
+        {"name": "case-3-short", "executable_path": "build/app", "breakpoint": "main", "args": ["short"]},
+        {"name": "case-3-long", "executable_path": "build/app", "breakpoint": "main", "args": ["long"]}
+      ]
+    }
+  ]
+}

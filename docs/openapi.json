@@ -1123,6 +1123,64 @@
         "title": "DebugBreakpointResponse",
         "type": "object"
       },
+      "DebugComparisonRequest": {
+        "properties": {
+          "build_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Task Id"
+          },
+          "core_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Core Ids"
+          },
+          "manifest_path": {
+            "default": "debug-workloads.json",
+            "title": "Manifest Path",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "DebugComparisonRequest",
+        "type": "object"
+      },
       "DebugExpressionRequest": {
         "properties": {
           "expression": {
@@ -1662,6 +1720,18 @@
       },
       "ScheduleComparisonRequest": {
         "properties": {
+          "build_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Task Id"
+          },
           "core_ids": {
             "anyOf": [
               {
@@ -1722,6 +1792,18 @@
       },
       "ScheduleExperimentRequest": {
         "properties": {
+          "build_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Task Id"
+          },
           "core_ids": {
             "anyOf": [
               {
@@ -1795,6 +1877,11 @@
             "minItems": 1,
             "title": "Tasks",
             "type": "array"
+          },
+          "work_dir": {
+            "default": ".",
+            "title": "Work Dir",
+            "type": "string"
           }
         },
         "required": [
@@ -2144,6 +2231,67 @@
         "summary": "List Backend Modules",
         "tags": [
           "modules"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/comparisons": {
+      "post": {
+        "operationId": "create_debug_comparison_api_v1_modules_co_debug_debug_comparisons_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugComparisonRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Debug Comparison",
+        "tags": [
+          "co_debug"
         ]
       }
     },

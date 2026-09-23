@@ -36,7 +36,7 @@ def test_openapi_snapshot_matches_subprocess_cli_schema(tmp_path: Path) -> None:
     assert not marker_path.exists()
 
     snapshot = json.loads(OPENAPI_PATH.read_text(encoding="utf-8"))
-    assert len(snapshot["paths"]) == 37
+    assert len(snapshot["paths"]) == 38
 
 
 def test_openapi_snapshot_contains_platform_co_debug_and_code_generation_routes() -> None:
@@ -49,6 +49,7 @@ def test_openapi_snapshot_contains_platform_co_debug_and_code_generation_routes(
     assert {
         "/api/v1/modules/co-debug/dependencies/analyze",
         "/api/v1/modules/co-debug/debug/sessions/{task_id}",
+        "/api/v1/modules/co-debug/debug/comparisons",
     } <= paths.keys()
     assert {
         "/api/v1/modules/code-generation/health",

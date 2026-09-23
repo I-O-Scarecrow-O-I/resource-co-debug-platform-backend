@@ -79,16 +79,16 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 ## A/B/C 路由分组
 
 所有路由、参数、状态码与 request/response schema 以 [`openapi.json`](openapi.json) 为准。下表按用途
-列出当前 37 个 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
+列出当前 38 个 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
 
 | 分组 | 用途 | 路由 |
 | --- | --- | --- |
 | 模块二 A：平台 | 健康、项目、模块清单、任务查询/日志/产物/取消与日志 WS | `GET /health`、`GET /modules`、`POST/GET /projects`、`GET /projects/{project_id}`、`GET /tasks`、`GET /tasks/{task_id}`、`GET /tasks/{task_id}/logs`、`GET /tasks/{task_id}/artifacts`、`GET /tasks/{task_id}/artifacts/{artifact_path}`、`POST /tasks/{task_id}/cancel`；另有 `WS /ws/v1/tasks/{task_id}/logs` |
 | 模块二 B：构建与调试 | 构建、调试、依赖分析/修复和完整调试会话 | `POST /tasks/build`、`POST /tasks/debug`、`POST /modules/co-debug/dependencies/analyze`、`repair`、`repair-build`、`POST /modules/co-debug/debug/sessions`、`GET /modules/co-debug/debug/sessions/{task_id}`、`GET /modules/co-debug/debug/sessions/{task_id}/state`、`GET /modules/co-debug/debug/sessions/{task_id}/stack-frames`、`POST /modules/co-debug/debug/sessions/{task_id}/arguments`、`breakpoints`、`run`、`continue`、`next`、`step`、`interrupt`、`wait`、`evaluate`、`close`、`DELETE /modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}` |
-| 模块二 C：调度与指标 | 调度实验、调度对比与指标计算 | `POST /tasks/schedule-experiments`、`POST /tasks/schedule-comparisons`、`GET /modules/co-debug/metrics/build-success-rate`、`GET /modules/co-debug/metrics/improvement-rate` |
+| 模块二 C：调度与指标 | 调度实验、调度对比、批处理调试对比与指标计算 | `POST /tasks/schedule-experiments`、`POST /tasks/schedule-comparisons`、`POST /modules/co-debug/debug/comparisons`、`GET /modules/co-debug/metrics/build-success-rate`、`GET /modules/co-debug/metrics/improvement-rate` |
 | 模块一接入：代码生成 | NaturalCC 连通状态、能力声明和统一任务生命周期 | `GET /modules/code-generation/health`、`GET /modules/code-generation/capabilities`、`POST /modules/code-generation/tasks` |
 
-表中的 HTTP 路径均相对于 `/api/v1`，共 37 个；例如模块一健康请求是
+表中的 HTTP 路径均相对于 `/api/v1`，共 38 个；例如模块一健康请求是
 `GET /api/v1/modules/code-generation/health`。模块二 B 行中未重复完整前缀的依赖动作均为
 `/modules/co-debug/dependencies/{action}`，调试动作均为
 `/modules/co-debug/debug/sessions/{task_id}/{action}`。
@@ -107,3 +107,8 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 
 页面目前仍是布局入口；建议在各业务模块新增各自 API/composable 后再绑定 UI，避免把 A/B/C 的
 请求细节堆入页面组件。
+
+## 批处理调试对比输入
+
+前端要从一个含三套代码的ZIP发起指标（4）对比时，使用
+`POST /api/v1/modules/co-debug/debug/comparisons`。ZIP根目录的`debug-workloads.json`由测试用例维护者填写，描述每组的可执行程序、断点和参数；请求只需`project_id`，可选成功构建任务的`build_task_id`、`core_ids`和超时。后端生成完整GDB批处理命令并沿用C的FIFO/优化双跑。完整格式与限制见[`C模块批处理调试输入说明.md`](C模块批处理调试输入说明.md)。

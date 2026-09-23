@@ -1,8 +1,8 @@
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import UUID
 
-from app.core.errors import CancellationRequested
+from app.core.errors import AppError, CancellationRequested
 from app.modules.co_debug.schemas.scheduler import (
     ScheduleComparisonSummary,
     StrategyRunResult,
@@ -50,7 +50,7 @@ class ScheduleComparisonService:
                 raise CancellationRequested()
 
             on_log(f"comparison workload started: {workload.name}", "co_debug.comparison")
-            fifo_cwd = workspace_factory()
+            fifo_cwd = self._resolve_work_dir(workspace_factory(), workload.work_dir)
             fifo = await self._run_strategy(
                 task_id=task_id,
                 workload=workload,
@@ -70,7 +70,7 @@ class ScheduleComparisonService:
                 f"FIFO timings applied as optimized estimates for {workload.name}",
                 "co_debug.comparison",
             )
-            optimized_cwd = workspace_factory()
+            optimized_cwd = self._resolve_work_dir(workspace_factory(), workload.work_dir)
             optimized = await self._run_strategy(
                 task_id=task_id,
                 workload=profiled_workload,
@@ -144,6 +144,18 @@ class ScheduleComparisonService:
             ),
         )
 
+    @staticmethod
+    def _resolve_work_dir(workspace: Path, work_dir: str) -> Path:
+        candidate = Path(work_dir)
+        windows_path = PureWindowsPath(work_dir)
+        if not work_dir or candidate.is_absolute() or windows_path.anchor:
+            raise AppError("work_dir must be relative to the project workspace")
+        root = workspace.resolve()
+        resolved = (root / candidate).resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_dir():
+            raise AppError(f"work_dir is outside the project or does not exist: {work_dir}")
+        return resolved
+
     def _apply_fifo_measurements(
         self,
         workload: ScheduleWorkloadSpec,
@@ -157,7 +169,11 @@ class ScheduleComparisonService:
             task.model_copy(update={"estimated_ms": measured_durations[task.name]})
             for task in workload.tasks
         ]
-        return ScheduleWorkloadSpec(name=workload.name, tasks=profiled_tasks)
+        return ScheduleWorkloadSpec(
+            name=workload.name,
+            work_dir=workload.work_dir,
+            tasks=profiled_tasks,
+        )
 
     async def _run_strategy(
         self,
