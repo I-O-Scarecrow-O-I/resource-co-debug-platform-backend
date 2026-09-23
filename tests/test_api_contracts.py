@@ -45,6 +45,11 @@ def test_module_registry_lists_backend_modules() -> None:
             "route_prefix": "/modules/code-generation",
             "version": "0.1.0",
         },
+        {
+            "name": "vulnerability",
+            "route_prefix": "/modules/vulnerability",
+            "version": "0.1.0",
+        },
     ]
 
 

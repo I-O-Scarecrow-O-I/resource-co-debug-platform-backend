@@ -127,8 +127,10 @@ def get_co_debug_task_service(
 
 def clear_task_service_cache() -> None:
     from app.modules.code_generation.deps import clear_code_generation_task_service_cache
+    from app.modules.vulnerability.deps import clear_vulnerability_task_service_cache
 
     clear_code_generation_task_service_cache()
+    clear_vulnerability_task_service_cache()
     get_task_service.cache_clear()
 
 

@@ -2055,6 +2055,115 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "VulnerabilityTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "incremental": {
+            "default": false,
+            "title": "Incremental",
+            "type": "boolean"
+          },
+          "max_findings": {
+            "default": 30,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Findings",
+            "type": "integer"
+          },
+          "mode": {
+            "default": "deep",
+            "enum": [
+              "builtin",
+              "deep"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "sanitizer_report": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sanitizer Report"
+          },
+          "scan_type": {
+            "enum": [
+              "frequent_defects",
+              "high_risk"
+            ],
+            "title": "Scan Type",
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "targets",
+              "project"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "severity_threshold": {
+            "default": "medium",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity Threshold",
+            "type": "string"
+          },
+          "source_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Task Id"
+          },
+          "target_files": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Target Files",
+            "type": "array"
+          },
+          "timeout_seconds": {
+            "anyOf": [
+              {
+                "maximum": 300.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout Seconds"
+          }
+        },
+        "required": [
+          "project_id",
+          "scan_type",
+          "scope"
+        ],
+        "title": "VulnerabilityTaskRequest",
+        "type": "object"
       }
     }
   },
@@ -3608,6 +3717,67 @@
         "summary": "Create Code Generation Task",
         "tags": [
           "code_generation"
+        ]
+      }
+    },
+    "/api/v1/modules/vulnerability/tasks": {
+      "post": {
+        "operationId": "create_vulnerability_task_api_v1_modules_vulnerability_tasks_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VulnerabilityTaskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Vulnerability Task",
+        "tags": [
+          "vulnerability"
         ]
       }
     },

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from pathlib import Path, PureWindowsPath
+from shutil import copytree, rmtree
 from typing import Any
 from uuid import UUID
 
@@ -10,6 +12,11 @@ from app.core.errors import AppError, CancellationRequested
 from app.modules.code_generation.client import NaturalCCClientError, NaturalCCCreateError
 from app.modules.code_generation.schemas import CodeGenerationTaskRequest, NaturalCCRunRequest
 from app.modules.code_generation.service import NaturalCCService
+from app.modules.vulnerability.client import (
+    PipelineClient,
+    PipelineError,
+    analyzer_coverage_status,
+)
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
 from app.platform.services.task_execution import ManagedTaskContext, ManagedTaskResult
@@ -37,10 +44,23 @@ _CANCEL_TIMEOUT_SECONDS = 2.0
 _CANCEL_ATTEMPTS = 3
 _CLEANUP_RETRY_ATTEMPTS = 3
 _CLEANUP_RETRY_SECONDS = 0.1
+_SOURCE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+    ".py", ".js", ".ts", ".java", ".go", ".php",
+}
 _OPERATION_GOALS = {
-    "completion": "Complete the requested code change.",
-    "repair": "Repair the reported code issue.",
-    "refactor": "Refactor the requested code while preserving behavior.",
+    "completion": (
+        "Complete the requested code change. Only edit the selected target files. "
+        "Do not run commands, tests, or builds."
+    ),
+    "repair": (
+        "Repair the reported code issue. Only edit the selected target files. "
+        "Do not run commands, tests, or builds."
+    ),
+    "refactor": (
+        "Refactor the requested code while preserving behavior. "
+        "Only edit the selected target files. Do not run commands, tests, or builds."
+    ),
 }
 _TASK_TYPES = {
     TaskType.CODE_GENERATION,
@@ -55,10 +75,14 @@ class CodeGenerationTaskService:
         task_service: TaskService,
         naturalcc_service: NaturalCCService,
         approve_execute: bool,
+        pipeline: PipelineClient | None = None,
     ) -> None:
         self.task_service = task_service
         self.naturalcc_service = naturalcc_service
         self.approve_execute = approve_execute
+        self.pipeline = pipeline
+        self._self_scans: dict[UUID, tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]] = {}
+        self._self_scans_lock = threading.Lock()
         self._runs: dict[UUID, str] = {}
         self._runs_lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -138,6 +162,12 @@ class CodeGenerationTaskService:
         task_id: UUID,
         deadline: float | None = None,
     ) -> None:
+        with self._self_scans_lock:
+            active_scan = self._self_scans.get(task_id)
+        if active_scan is not None:
+            loop, scan_task = active_scan
+            loop.call_soon_threadsafe(scan_task.cancel)
+            return
         confirmed, _ = await self._cancel_run(task_id, deadline=deadline)
         if confirmed:
             self._finish_confirmed_workspace(task_id, cleanup=True)
@@ -203,12 +233,13 @@ class CodeGenerationTaskService:
                     remote_run_id,
                     state,
                 )
-                if (
-                    result.status != TaskStatus.SUCCEEDED
-                    and remote_terminal_confirmed
-                ):
-                    self._finish_confirmed_workspace(context.task_id, cleanup=True)
-                return result
+            if result.status == TaskStatus.SUCCEEDED:
+                result.result["self_scan"] = await self._self_scan(
+                    context, request, result.result["changed_files"], task_workspace, deadline
+                )
+            elif remote_terminal_confirmed:
+                self._finish_confirmed_workspace(context.task_id, cleanup=True)
+            return result
         except CancellationRequested:
             if remote_run_id is not None:
                 confirmed, _ = await self._cancel_run(context.task_id)
@@ -344,6 +375,175 @@ class CodeGenerationTaskService:
         if remaining_timeout_seconds <= 0:
             raise TimeoutError
         return remaining_timeout_seconds
+
+    async def _self_scan(
+        self,
+        context: ManagedTaskContext,
+        request: CodeGenerationTaskRequest,
+        changed_files: list[str],
+        workspace: Path,
+        deadline: float,
+    ) -> dict[str, Any]:
+        try:
+            target_files = self._scan_targets(
+                context, workspace, request.target_files, changed_files
+            )
+        except AppError:
+            return {"status": "failed", "error": "Agent changed_files is invalid or missing"}
+        if not target_files:
+            return {"status": "failed", "error": "No source files available for self scan"}
+        if self.pipeline is None:
+            return {"status": "unavailable", "error": "Pipeline scanner is not configured"}
+        remaining = deadline - asyncio.get_running_loop().time() - 0.25
+        if remaining <= 0:
+            return {"status": "unavailable", "error": "No time remained for self scan"}
+        analyzer = (
+            "cppcheck"
+            if any(Path(file).suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}
+                   for file in target_files)
+            else "builtin"
+        )
+        loop = asyncio.get_running_loop()
+        with self._self_scans_lock:
+            self._self_scans[context.task_id] = (loop, asyncio.current_task())
+        scan_copy = workspace.parent / "self-scan"
+        copy_created = False
+        cleanup_failed = False
+        failure = None
+        try:
+            context.raise_if_cancelled()
+            self._create_self_scan_copy(context, workspace, scan_copy)
+            copy_created = True
+            copytree(workspace, scan_copy, symlinks=True, dirs_exist_ok=True)
+            scan_remaining = deadline - loop.time() - 0.25
+            if scan_remaining <= 0:
+                raise TimeoutError
+            async with asyncio.timeout(scan_remaining):
+                done = await self.pipeline.scan(
+                    workspace=scan_copy,
+                    target_files=target_files,
+                    scope="targets",
+                    analyzer=analyzer,
+                    incremental=False,
+                    severity_threshold="medium",
+                    max_findings=30,
+                    timeout_seconds=scan_remaining,
+                    on_event=lambda kind: context.log(
+                        f"Pipeline self scan event: {kind}", stream="code_generation.adapter"
+                    ),
+                )
+            context.raise_if_cancelled()
+        except PipelineError as exc:
+            artifacts = exc.done.get("artifacts") if exc.done else None
+            coverage = artifacts.get("coverage") if isinstance(artifacts, dict) else None
+            failure = {
+                "status": "failed",
+                "error": str(exc),
+                **({"coverage": coverage} if isinstance(coverage, list) else {}),
+            }
+        except TimeoutError:
+            failure = {"status": "failed", "error": "Pipeline self scan timed out"}
+        except CancellationRequested:
+            raise
+        except Exception:
+            failure = {"status": "failed", "error": "Pipeline self scan failed"}
+        finally:
+            try:
+                if copy_created:
+                    self._remove_self_scan_copy(context, workspace, scan_copy)
+            except (AppError, OSError):
+                cleanup_failed = True
+                logger.warning("self scan copy cleanup failed for task %s", context.task_id)
+            with self._self_scans_lock:
+                self._self_scans.pop(context.task_id, None)
+        if cleanup_failed:
+            return {"status": "failed", "error": "Pipeline self scan copy cleanup failed"}
+        if failure is not None:
+            return failure
+        artifacts = done.get("artifacts")
+        findings = artifacts.get("findings") if isinstance(artifacts, dict) else None
+        coverage = artifacts.get("coverage") if isinstance(artifacts, dict) else None
+        if not isinstance(findings, list) or not isinstance(coverage, list):
+            return {"status": "failed", "error": "Pipeline self scan returned invalid artifacts"}
+        if done.get("files_modified"):
+            return {
+                "status": "failed",
+                "error": "Pipeline self scan modified files",
+                "coverage": coverage,
+            }
+        coverage_status = analyzer_coverage_status(coverage, analyzer)
+        if coverage_status is None:
+            return {
+                "status": "failed",
+                "error": f"{analyzer} scan coverage unavailable",
+                "coverage": coverage,
+            }
+        return {
+            "status": coverage_status,
+            "findings": findings,
+            "coverage": coverage,
+            "report": done.get("report", ""),
+        }
+
+    def _create_self_scan_copy(
+        self, context: ManagedTaskContext, workspace: Path, scan_copy: Path
+    ) -> None:
+        workspace_service = self.task_service.workspace_service
+        if workspace != workspace_service.resolve_task_workspace(
+            context.project_id, context.task_id
+        ) or scan_copy != workspace.parent / "self-scan":
+            raise AppError("invalid self scan workspace")
+        if workspace_service._is_link_or_reparse_point(scan_copy) or scan_copy.exists():
+            raise AppError("self scan copy already exists")
+        scan_copy.mkdir()
+
+    def _remove_self_scan_copy(
+        self, context: ManagedTaskContext, workspace: Path, scan_copy: Path
+    ) -> None:
+        if not scan_copy.exists() and not scan_copy.is_symlink():
+            return
+        workspace_service = self.task_service.workspace_service
+        if (
+            workspace != workspace_service.resolve_task_workspace(
+                context.project_id, context.task_id
+            )
+            or scan_copy != workspace.parent / "self-scan"
+            or scan_copy.resolve().parent != workspace.parent.resolve()
+            or workspace_service._is_link_or_reparse_point(scan_copy)
+        ):
+            raise AppError("invalid self scan cleanup path")
+        rmtree(scan_copy)
+
+    def _scan_targets(
+        self,
+        context: ManagedTaskContext,
+        workspace: Path,
+        requested: list[str],
+        changed: list[str],
+    ) -> list[str]:
+        targets: list[str] = []
+        for value in [*requested, *changed]:
+            path = Path(value)
+            windows_path = PureWindowsPath(value)
+            if (
+                not value
+                or "\\" in value
+                or path.is_absolute()
+                or windows_path.drive
+                or any(part == ".." for part in path.parts)
+            ):
+                raise AppError("invalid self scan target")
+            target = context.resolve_path(workspace, value)
+            current = workspace
+            for part in path.parts:
+                current /= part
+                if self.task_service.workspace_service._is_link_or_reparse_point(current):
+                    raise AppError("invalid self scan target")
+            if not target.is_file():
+                raise AppError("missing self scan target")
+            if path.suffix.lower() in _SOURCE_SUFFIXES and value not in targets:
+                targets.append(value)
+        return targets
 
     @staticmethod
     def _pending_approval(state: dict[str, Any]) -> tuple[str, str]:
