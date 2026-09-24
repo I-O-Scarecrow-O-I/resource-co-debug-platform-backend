@@ -110,5 +110,5 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 
 ## 批处理调试对比输入
 
-前端要从一个含三套代码的ZIP发起指标（4）对比时，使用
+前端要从已上传的工程包中按预设调试作业发起指标（4）对比时，使用
 `POST /api/v1/modules/co-debug/debug/comparisons`。ZIP根目录的`debug-workloads.json`由测试用例维护者填写，描述每组的可执行程序、断点和参数；请求只需`project_id`，可选成功构建任务的`build_task_id`、`core_ids`和超时。后端生成完整GDB批处理命令并沿用C的FIFO/优化双跑。完整格式与限制见[`C模块批处理调试输入说明.md`](C模块批处理调试输入说明.md)。

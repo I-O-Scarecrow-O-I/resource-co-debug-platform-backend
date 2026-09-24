@@ -1,6 +1,6 @@
 # C模块调度与对比实验使用说明
 
-一个ZIP包含三套代码、并由后端生成GDB批处理作业时，使用
+一个工程包内含预设调试作业、并由后端生成GDB批处理命令时，使用
 `POST /api/v1/modules/co-debug/debug/comparisons`；工程包配置见
 `C模块批处理调试输入说明.md`。本页描述的通用`/tasks/schedule-comparisons`接口仍用于已准备好`TaskExecutionSpec.command`的开发负载。
 
