@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "workloads": [
+    {
+      "name": "example-program",
+      "work_dir": ".",
+      "jobs": [
+        {"name": "example-short", "executable_path": "build/app", "breakpoint": "main", "args": ["short"]},
+        {"name": "example-long", "executable_path": "build/app", "breakpoint": "main", "args": ["long"]}
+      ]
+    }
+  ]
+}

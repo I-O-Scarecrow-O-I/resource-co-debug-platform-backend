@@ -40,6 +40,7 @@ class DebugTaskRequest(BaseModel):
 class ScheduleExperimentRequest(BaseModel):
     module: BackendModuleName = BackendModuleName.CO_DEBUG
     project_id: UUID
+    build_task_id: UUID | None = None
     strategy: SchedulerStrategy = SchedulerStrategy.RESOURCE_AWARE
     tasks: list[TaskExecutionSpec] = Field(
         default_factory=list, min_length=1, validate_default=True
@@ -51,12 +52,14 @@ class ScheduleExperimentRequest(BaseModel):
 
 class ScheduleWorkloadSpec(BaseModel):
     name: str
+    work_dir: str = "."
     tasks: list[TaskExecutionSpec] = Field(min_length=1)
 
 
 class ScheduleComparisonRequest(BaseModel):
     module: BackendModuleName = BackendModuleName.CO_DEBUG
     project_id: UUID
+    build_task_id: UUID | None = None
     workloads: list[ScheduleWorkloadSpec] = Field(min_length=1, max_length=3)
     core_ids: list[int] | None = Field(default=None, min_length=1)
     timeout_seconds: int | None = Field(default=None, ge=1)

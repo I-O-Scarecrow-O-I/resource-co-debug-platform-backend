@@ -14,6 +14,7 @@ from app.modules.co_debug.schemas.debug import (
     DebugStackFramesResponse,
     DebugWaitForStopRequest,
 )
+from app.modules.co_debug.schemas.debug_workloads import DebugComparisonRequest
 from app.modules.co_debug.schemas.dependencies import (
     DependencyAnalysisResponse,
     DependencyRepairBuildRequest,
@@ -23,7 +24,9 @@ from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.metric_service import AcceptanceMetricService
 from app.modules.co_debug.services.repair_build_service import DependencyRepairBuildService
+from app.modules.co_debug.services.task_service import CoDebugTaskService
 from app.platform.api.deps import (
+    get_co_debug_task_service,
     get_debug_service,
     get_dependency_repair_build_service,
     get_dependency_service,
@@ -33,6 +36,15 @@ from app.platform.schemas.common import ApiResponse
 from app.platform.schemas.tasks import DebugTaskRequest, TaskResponse
 
 router = APIRouter()
+
+
+@router.post("/debug/comparisons", response_model=ApiResponse[TaskResponse])
+async def create_debug_comparison(
+    request: DebugComparisonRequest,
+    service: Annotated[CoDebugTaskService, Depends(get_co_debug_task_service)],
+) -> ApiResponse[TaskResponse]:
+    task = await service.create_debug_schedule_comparison(request)
+    return ApiResponse.ok(TaskResponse.from_record(task))
 
 
 @router.post("/dependencies/analyze", response_model=ApiResponse[DependencyAnalysisResponse])

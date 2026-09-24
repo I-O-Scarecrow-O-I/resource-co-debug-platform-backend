@@ -306,6 +306,23 @@ class TaskService:
         resolved = self.workspace_service.resolve_path_in_workspace(source_root, path)
         return str(resolved.relative_to(source_root)) if resolved.is_file() else None
 
+    def read_project_source_text(
+        self, *, project_id: UUID, path: str, max_bytes: int = 64 * 1024
+    ) -> str:
+        """Read a small project source file without exposing a server filesystem path."""
+        requested = Path(path)
+        if requested.is_absolute() or requested.anchor or "\\" in path or ":" in path:
+            raise AppError("project source path must be relative")
+        source_file = self.workspace_service.resolve_project_path(project_id, path)
+        if not source_file.is_file():
+            raise AppError(f"project source file does not exist: {path}")
+        if source_file.stat().st_size > max_bytes:
+            raise AppError("project source file exceeds size limit")
+        try:
+            return source_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise AppError("project source file must be UTF-8") from exc
+
     def list_task_artifacts(self, task_id: UUID) -> list[tuple[str, int]]:
         task = self._require_succeeded_artifact_task(task_id)
         return self.workspace_service.list_task_artifacts(task.project_id, task.id)
