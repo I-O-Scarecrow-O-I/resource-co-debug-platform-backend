@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from pathlib import Path
+from uuid import UUID
 
 from app.core.errors import AppError
 from app.modules.co_debug.debug.broker import DebugCommandBroker
@@ -14,6 +17,10 @@ from app.modules.co_debug.debug.platform_transport import (
 )
 from app.modules.co_debug.debug.session import GdbMiSession
 from app.modules.co_debug.debug.transport import GdbTransportClosed
+from app.modules.co_debug.schemas.debug import (
+    DebugBuildCandidate,
+    DebugExecutableCandidate,
+)
 from app.platform.domain.enums import TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
 from app.platform.schemas.tasks import DebugTaskRequest
@@ -49,6 +56,101 @@ class InteractiveDebugService:
         self.task_service = task_service
         self.session_manager = session_manager
         self.dispatcher = GdbMiCommandDispatcher()
+
+
+    def list_candidates(
+        self,
+        *,
+        project_id: UUID | None = None,
+    ) -> list[DebugBuildCandidate]:
+        """Return retained successful builds that contain debuggable ELF executables."""
+        candidates: list[DebugBuildCandidate] = []
+
+        for task in self.task_service.list_tasks():
+            if (
+                task.task_type != TaskType.BUILD
+                or task.status != TaskStatus.SUCCEEDED
+            ):
+                continue
+
+            if (
+                project_id is not None
+                and task.project_id != project_id
+            ):
+                continue
+
+            try:
+                artifacts = self.task_service.list_task_artifacts(
+                    task.id
+                )
+            except AppError:
+                # Task history can outlive retained build artifacts.
+                # Such records are not valid debug candidates.
+                continue
+
+            executables: list[DebugExecutableCandidate] = []
+
+            for artifact_path, _ in artifacts:
+                try:
+                    artifact = self.task_service.resolve_task_artifact(
+                        task.id,
+                        artifact_path,
+                    )
+                except AppError:
+                    # Artifact availability can change between list/resolve.
+                    continue
+
+                if not self._is_debuggable_executable(artifact):
+                    continue
+
+                executables.append(
+                    DebugExecutableCandidate(
+                        name=artifact.name,
+                        executable_path=artifact_path,
+                    )
+                )
+
+            if not executables:
+                continue
+
+            executables.sort(
+                key=lambda item: item.executable_path
+            )
+
+            build_kind = (
+                "repair-build"
+                if task.metadata.get("operation")
+                == "dependency_repair_build"
+                else "build"
+            )
+
+            candidates.append(
+                DebugBuildCandidate(
+                    project_id=task.project_id,
+                    build_task_id=task.id,
+                    build_kind=build_kind,
+                    created_at=task.created_at,
+                    executables=executables,
+                )
+            )
+
+        return candidates
+
+    @staticmethod
+    def _is_debuggable_executable(
+        path: Path,
+    ) -> bool:
+        if (
+            not path.is_file()
+            or not os.access(path, os.X_OK)
+        ):
+            return False
+
+        try:
+            with path.open("rb") as executable:
+                return executable.read(4) == b"\x7fELF"
+        except OSError:
+            return False
 
     async def create_task(
         self,
