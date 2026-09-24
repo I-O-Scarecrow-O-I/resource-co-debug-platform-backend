@@ -7,6 +7,7 @@ from app.core.config import get_settings
 from app.modules.code_generation.client import NaturalCCClient
 from app.modules.code_generation.service import NaturalCCService
 from app.modules.code_generation.task_service import CodeGenerationTaskService
+from app.modules.vulnerability.client import PipelineClient
 from app.platform.api.deps import get_task_service
 from app.platform.services.task_service import TaskService
 
@@ -33,6 +34,10 @@ def _get_code_generation_task_service(
         task_service=task_service,
         naturalcc_service=naturalcc_service,
         approve_execute=approve_execute,
+        pipeline=PipelineClient(
+            base_url=get_settings().naturalcc_base_url,
+            connect_timeout_seconds=get_settings().naturalcc_connect_timeout_seconds,
+        ),
     )
 
 

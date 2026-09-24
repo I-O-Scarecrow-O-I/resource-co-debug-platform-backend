@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import sqlite3
 import threading
 import time
@@ -7,6 +8,7 @@ import zipfile
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
@@ -17,6 +19,7 @@ from app.modules.code_generation.client import NaturalCCClientError, NaturalCCCr
 from app.modules.code_generation.deps import get_code_generation_task_service
 from app.modules.code_generation.schemas import CodeGenerationTaskRequest
 from app.modules.code_generation.task_service import CodeGenerationTaskService
+from app.modules.vulnerability.client import PipelineClient
 from app.platform.api.deps import get_log_service, get_task_service
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
@@ -63,6 +66,7 @@ class FakeNaturalCCService:
         self.event_afters: list[int] = []
         self.event_timeouts: list[float | None] = []
         self.network_timeouts: list[float | None] = []
+        self.generated_files: dict[str, str] = {}
 
     async def create_run(self, *, workspace: Path, request) -> dict:
         self.call_order.append("create")
@@ -110,6 +114,10 @@ class FakeNaturalCCService:
         if state["status"] == "completed":
             workspace = self.created_requests[-1][0]
             (workspace / "generated.txt").write_text("generated", encoding="utf-8")
+            for path, content in self.generated_files.items():
+                generated = workspace / path
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_text(content, encoding="utf-8")
         return state
 
     async def events(
@@ -300,6 +308,10 @@ def test_code_generation_task_succeeds_preserves_artifacts_without_preapproval(
         "naturalcc_run_id": "naturalcc-run-1",
         "final_answer": "finished with phase-two-api-key",
         "changed_files": ["generated.txt"],
+        "self_scan": {
+            "status": "unavailable",
+            "error": "Pipeline scanner is not configured",
+        },
     }
     assert remote.approvals == []
     _, remote_request = remote.created_requests[0]
@@ -373,7 +385,368 @@ def test_code_generation_operation_translates_to_remote_goal(
     )
 
     _wait_for_terminal(client, response.json()["data"]["id"])
-    assert remote.created_requests[0][1].goal == f"{prefix}\n\n{instruction}"
+    assert remote.created_requests[0][1].goal == (
+        f"{prefix} Only edit the selected target files. "
+        f"Do not run commands, tests, or builds.\n\n{instruction}"
+    )
+
+
+@pytest.mark.parametrize("operation,task_type", [
+    ("repair", "CODE_REPAIR"),
+    ("refactor", "CODE_REFACTOR"),
+])
+def test_code_operation_simulation_preserves_result_and_failure(
+    code_generation_api, operation: str, task_type: str,
+) -> None:
+    client, _, project, _, _, _, remote = code_generation_api
+    instruction = "Change the selected function."
+    payload = {
+        **_request_payload(str(project.id)),
+        "operation": operation,
+        "instruction": instruction,
+    }
+
+    response = client.post("/api/v1/modules/code-generation/tasks", json=payload)
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+
+    assert task["task_type"] == task_type
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["changed_files"] == ["generated.txt"]
+    assert task["result"]["final_answer"] == "finished with phase-two-api-key"
+    assert instruction in remote.created_requests[-1][1].goal
+
+    remote.state = {"status": "failed"}
+    failed = client.post("/api/v1/modules/code-generation/tasks", json=payload)
+    failed_task = _wait_for_terminal(client, failed.json()["data"]["id"])
+    assert failed_task["task_type"] == task_type
+    assert failed_task["status"] == "FAILED"
+    assert failed_task["error"] == "NaturalCC run ended with status failed"
+
+
+def test_generated_code_self_scan_returns_pipeline_findings_and_coverage(
+    code_generation_api,
+) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    requests = []
+    done = {
+        "type": "done", "status": "success", "report": "local checks",
+        "artifacts": {
+            "findings": [{"rule": "sample"}],
+            "coverage": [{"engine": "builtin", "status": "completed", "reused_files": 0}],
+        },
+    }
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, content=(json.dumps(done) + "\n").encode())
+
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(handle),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["changed_files"] == ["generated.txt"]
+    assert task["result"]["self_scan"] == {
+        "status": "completed", "findings": [{"rule": "sample"}],
+        "coverage": [{"engine": "builtin", "status": "completed", "reused_files": 0}],
+        "report": "local checks",
+    }
+    assert requests[0]["feature"] == "vulnerability_detection"
+    assert requests[0]["feature_config"]["analyzer"] == "builtin"
+    assert requests[0]["feature_config"]["auto_fix"] is False
+    assert "api_key" not in requests[0]
+    assert requests[0]["target_files"] == ["src/main.py"]
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+def test_self_scan_includes_existing_changed_source_files(code_generation_api) -> None:
+    client, _, project, _, _, service, remote = code_generation_api
+    remote.generated_files = {"src/generated.c": "int generated(void) { return 1; }\n"}
+    remote.state["working_state"] = {"changed_files": ["src/main.py", "src/generated.c"]}
+    requests = []
+    done = {
+        "type": "done", "status": "success", "artifacts": {
+            "findings": [],
+            "coverage": [
+                {"engine": "builtin", "status": "completed"},
+                {"engine": "cppcheck", "status": "completed"},
+            ],
+        },
+    }
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, content=(json.dumps(done) + "\n").encode())
+
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(handle),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "completed"
+    assert requests[0]["target_files"] == ["src/main.py", "src/generated.c"]
+    assert requests[0]["feature_config"]["analyzer"] == "cppcheck"
+
+
+@pytest.mark.parametrize("changed_file", ["../outside.c", "C:/outside.c", "missing.c"])
+def test_self_scan_rejects_uncontrolled_or_missing_changed_file(
+    code_generation_api, changed_file: str,
+) -> None:
+    client, _, project, _, _, service, remote = code_generation_api
+    remote.state["working_state"] = {"changed_files": [changed_file]}
+    requests = []
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, content=b'{"type":"done","status":"success"}\n')
+
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(handle),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert requests == []
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+def test_self_scan_uses_disposable_copy_and_preserves_generated_artifacts(
+    code_generation_api,
+) -> None:
+    client, _, project, _, _, service, remote = code_generation_api
+    scanned_workspaces = []
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [], "coverage": [{"engine": "builtin", "status": "completed"}],
+    }}
+
+    def handle(request):
+        payload = json.loads(request.content)
+        scan_workspace = Path(payload["project_dir"])
+        scanned_workspaces.append(scan_workspace)
+        (scan_workspace / "src/main.py").write_text("corrupted", encoding="utf-8")
+        return httpx.Response(200, content=(json.dumps(done) + "\n").encode())
+
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(handle),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    generated_workspace = remote.created_requests[-1][0]
+
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "completed"
+    assert scanned_workspaces[0].parent == generated_workspace.parent
+    assert scanned_workspaces[0] != generated_workspace
+    assert not scanned_workspaces[0].exists()
+    assert (generated_workspace / "src/main.py").read_text(encoding="utf-8") == "print('source')\n"
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+def test_self_scan_does_not_remove_preexisting_scan_directory(code_generation_api) -> None:
+    client, _, project, _, _, service, remote = code_generation_api
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [], "coverage": [{"engine": "builtin", "status": "completed"}],
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    original_run = remote.run
+    preexisting = []
+
+    async def run_with_preexisting_scan_copy(run_id, *, timeout_seconds=None):
+        state = await original_run(run_id, timeout_seconds=timeout_seconds)
+        scan_copy = remote.created_requests[-1][0].parent / "self-scan"
+        scan_copy.mkdir()
+        (scan_copy / "keep.txt").write_text("keep", encoding="utf-8")
+        preexisting.append(scan_copy)
+        return state
+
+    remote.run = run_with_preexisting_scan_copy
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert (preexisting[0] / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_failed_self_scan_preserves_generated_artifact_and_marks_failure(
+    code_generation_api,
+) -> None:
+    client, _, project, _, _, service, remote = code_generation_api
+    done = {"type": "done", "status": "error", "artifacts": {
+        "findings": [], "coverage": [{"engine": "cppcheck", "status": "unavailable"}],
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    (project.source_path / "src/main.c").write_text("int main(void) { return 0; }\n")
+    payload = {**_request_payload(str(project.id)), "target_files": ["src/main.c"]}
+    response = client.post("/api/v1/modules/code-generation/tasks", json=payload)
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert task["result"]["self_scan"]["coverage"][0]["status"] == "unavailable"
+    assert not (remote.created_requests[-1][0].parent / "self-scan").exists()
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+def test_partial_cppcheck_self_scan_is_not_reported_as_complete(code_generation_api) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [], "coverage": [
+            {"engine": "builtin", "status": "completed"},
+            {"engine": "cppcheck", "status": "partial"},
+        ],
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    (project.source_path / "src/main.c").write_text("int main(void) { return 0; }\n")
+    response = client.post("/api/v1/modules/code-generation/tasks", json={
+        **_request_payload(str(project.id)), "target_files": ["src/main.c"],
+    })
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "partial"
+    assert task["result"]["self_scan"]["coverage"] == [
+        {"engine": "builtin", "status": "completed"},
+        {"engine": "cppcheck", "status": "partial"}
+    ]
+
+
+@pytest.mark.parametrize("coverage", [
+    [{"engine": "cppcheck", "status": "completed"}],
+    [
+        {"engine": "builtin", "status": "failed"},
+        {"engine": "cppcheck", "status": "completed"},
+    ],
+])
+def test_deep_self_scan_rejects_missing_or_invalid_builtin_coverage(
+    code_generation_api, coverage,
+) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [], "coverage": coverage,
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    (project.source_path / "src/main.c").write_text("int main(void) { return 0; }\n")
+    response = client.post("/api/v1/modules/code-generation/tasks", json={
+        **_request_payload(str(project.id)), "target_files": ["src/main.c"],
+    })
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert task["result"]["self_scan"]["coverage"] == coverage
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+@pytest.mark.parametrize("coverage", [
+    [],
+    [{"engine": "cppcheck", "status": "completed"}],
+    [{"engine": "builtin", "status": "unavailable"}],
+    [{"engine": "builtin", "status": "partial"}],
+])
+def test_builtin_self_scan_requires_valid_builtin_coverage(code_generation_api, coverage):
+    client, _, project, _, _, service, _ = code_generation_api
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [], "coverage": coverage,
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert task["result"]["self_scan"]["coverage"] == coverage
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
+class BlockingSelfScan(httpx.AsyncByteStream):
+    def __init__(self):
+        self.started = threading.Event()
+        self.closed = threading.Event()
+
+    async def __aiter__(self):
+        self.started.set()
+        yield b'{"type":"start"}\n'
+        await asyncio.sleep(100)
+
+    async def aclose(self):
+        self.closed.set()
+
+
+def test_cancel_during_self_scan_closes_stream(code_generation_api) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    stream = BlockingSelfScan()
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream)),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task_id = response.json()["data"]["id"]
+    assert stream.started.wait(2)
+    client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert _wait_for_terminal(client, task_id)["status"] == "CANCELLED"
+    assert stream.closed.wait(2)
+
+
+def test_self_scan_timeout_preserves_generated_artifact(code_generation_api) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    stream = BlockingSelfScan()
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=stream)),
+    )
+    response = client.post("/api/v1/modules/code-generation/tasks", json={
+        **_request_payload(str(project.id)), "timeout_seconds": 1,
+    })
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["status"] == "SUCCEEDED"
+    assert task["result"]["self_scan"]["status"] == "failed"
+    assert "timed out" in task["result"]["self_scan"]["error"]
+    assert stream.closed.wait(2)
+    assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
+
+
 
 
 def test_determinate_create_failure_cleans_workspace(code_generation_api) -> None:

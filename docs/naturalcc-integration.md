@@ -45,6 +45,29 @@ Windows 本地会话应如上设置 `LIBCLANG_PATH`。当前已使用
 成功解析 `test/test-skills/vuln.c`（`parsed=True`、5 个 keys）。这仅证明 Windows 本地动态库加载和
 样例解析，不构成 Agent、模型或完整任务链路的端到端验收。
 
+## Pipeline 漏洞扫描
+
+后端的 `POST /api/v1/modules/vulnerability/tasks` 和代码生成后的自动自检，会由后端调用
+`NATURALCC_BASE_URL/api/run` 的 Pipeline `vulnerability_detection` feature。扫描器在 NaturalCC
+服务端运行，该服务必须能访问后端传入的 workspace 路径。`mode=builtin` 使用内置规则分析器，
+`mode=deep` 使用 builtin 加 Cppcheck；deep 模式需在 NaturalCC 服务端安装 Cppcheck 并使 `cppcheck`
+位于服务进程的 `PATH`，仅在浏览器或调用端安装无效。
+若 builtin 或 Cppcheck 未达到要求，deep 扫描会失败并保留 coverage 诊断。`partial` coverage 只说明有部分结果，不能
+视为完整覆盖。代码生成自检按目标文件扩展名选择分析器：C/C++ 使用 Cppcheck，其他文件使用 builtin。
+
+Pipeline 请求固定 `auto_fix=false`，只执行分析；这个直接的扫描 HTTP 调用不需要 Agent 批准 `execute`，
+也不要求扫描请求提供模型 API key。它不改变 NaturalCC Agent deferred-approval 政策：
+`NATURALCC_APPROVE_EXECUTE=false` 继续保持现状，仍只批准 write。不要为了启用扫描而改成 `true`。
+
+任务可用 `incremental=true` 请求内置规则扫描缓存，但缓存 key 包含 workspace 根路径以及文件内容、路径和
+规则配置。每个后端任务都会创建新的任务 workspace 根，因此不能依赖不同任务间缓存命中或宣称跨任务
+加速；Cppcheck 也会重新分析选定的 C/C++ 文件。代码生成自动自检当前固定 `incremental=false`。
+
+TSan 结果日志必须先位于扫描所用 workspace 内，再通过相对路径 `sanitizer_report` 提交，例如
+`artifacts/tsan.log`。当扫描代码生成产物时，设置 `source_task_id` 为同项目的成功代码生成任务 ID，
+目标文件和 TSan 日志路径都相对于该任务 workspace；普通项目扫描则相对于项目 workspace。后端会验证
+文件存在且路径留在 workspace 内，不接受本机绝对路径或 workspace 外文件。
+
 ## 工具与 deferred approval
 
 | 上游工具或状态 | 风险与后端行为 |
