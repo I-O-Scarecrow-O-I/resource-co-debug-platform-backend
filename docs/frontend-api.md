@@ -134,17 +134,17 @@ ThreadSanitizer (TSan) 日志通过可选 `sanitizer_report` 传入。先通过�
 ## A/B/C 路由分组
 
 所有路由、参数、状态码与 request/response schema 以 [`openapi.json`](openapi.json) 为准。下表按用途
-列出当前 39 个 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
+列出当前 41 个 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
 
 | 分组 | 用途 | 路由 |
 | --- | --- | --- |
 | 模块二 A：平台 | 健康、项目、模块清单、任务查询/日志/产物/取消与日志 WS | `GET /health`、`GET /modules`、`POST/GET /projects`、`GET /projects/{project_id}`、`GET /tasks`、`GET /tasks/{task_id}`、`GET /tasks/{task_id}/logs`、`GET /tasks/{task_id}/artifacts`、`GET /tasks/{task_id}/artifacts/{artifact_path}`、`POST /tasks/{task_id}/cancel`；另有 `WS /ws/v1/tasks/{task_id}/logs` |
 | 模块二 B：构建与调试 | 构建、调试、依赖分析/修复和完整调试会话 | `POST /tasks/build`、`POST /tasks/debug`、`POST /modules/co-debug/dependencies/analyze`、`repair`、`repair-build`、`POST /modules/co-debug/debug/sessions`、`GET /modules/co-debug/debug/sessions/{task_id}`、`GET /modules/co-debug/debug/sessions/{task_id}/state`、`GET /modules/co-debug/debug/sessions/{task_id}/stack-frames`、`POST /modules/co-debug/debug/sessions/{task_id}/arguments`、`breakpoints`、`run`、`continue`、`next`、`step`、`interrupt`、`wait`、`evaluate`、`close`、`DELETE /modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}` |
-| 模块二 C：调度与指标 | 调度实验、调度对比、批处理调试对比与指标计算 | `POST /tasks/schedule-experiments`、`POST /tasks/schedule-comparisons`、`POST /modules/co-debug/debug/comparisons`、`GET /modules/co-debug/metrics/build-success-rate`、`GET /modules/co-debug/metrics/improvement-rate` |
+| 模块二 C：调度与指标 | 调度实验、调度对比、批处理调试对比与指标计算 | `POST /tasks/schedule-experiments`、`POST /tasks/schedule-comparisons`、`POST /modules/co-debug/debug/comparisons`、`GET /modules/co-debug/metrics/build-success-rate`、`GET /modules/co-debug/metrics/improvement-rate`、`POST /modules/co-debug/metrics/debug-comparison-summary` |
 | 模块一接入：代码生成 | NaturalCC 连通状态、能力声明和统一任务生命周期 | `GET /modules/code-generation/health`、`GET /modules/code-generation/capabilities`、`POST /modules/code-generation/tasks` |
 | 模块一接入：漏洞扫描 | 对工程或生成产物发起扫描任务 | `POST /modules/vulnerability/tasks` |
 
-表中的 HTTP 路径均相对于 `/api/v1`，共 39 个；例如模块一健康请求是
+表中的 HTTP 路径均相对于 `/api/v1`，共 41 个；例如模块一健康请求是
 `GET /api/v1/modules/code-generation/health`。模块二 B 行中未重复完整前缀的依赖动作均为
 `/modules/co-debug/dependencies/{action}`，调试动作均为
 `/modules/co-debug/debug/sessions/{task_id}/{action}`。
@@ -168,3 +168,22 @@ ThreadSanitizer (TSan) 日志通过可选 `sanitizer_report` 传入。先通过�
 
 前端要从已上传的工程包中按预设调试作业发起指标（4）对比时，使用
 `POST /api/v1/modules/co-debug/debug/comparisons`。ZIP根目录的`debug-workloads.json`由测试用例维护者填写，描述每组的可执行程序、断点和参数；请求只需`project_id`，可选成功构建任务的`build_task_id`、`core_ids`和超时。后端生成完整GDB批处理命令并沿用C的FIFO/优化双跑。完整格式与限制见[`C模块批处理调试输入说明.md`](C模块批处理调试输入说明.md)。
+
+## 历史调试对比指标汇总
+
+`POST /api/v1/modules/co-debug/metrics/debug-comparison-summary`用于汇总已经完成的批处理调试对比。前端只提交历史`SCHEDULE_COMPARISON`任务ID：
+
+```json
+{
+  "comparison_task_ids": [
+    "11111111-1111-1111-1111-111111111111",
+    "22222222-2222-2222-2222-222222222222"
+  ]
+}
+```
+
+后端从持久化Task记录读取并校验任务类型、来源、成功状态和`ScheduleComparisonSummary`结果，再按每个Task一个实验样本计算平均提升率。请求不接受前端自行计算的`improvement_rate`、FIFO耗时或优化耗时。
+
+接口支持一个或多个样本，不要求必须为3个，也不设置固定的3样本上限。正式合同测试仍可由UI选择指定3套代码对应的历史结果。重复Task ID、普通`/tasks/schedule-comparisons`任务、未成功任务和结果结构不完整的任务会被拒绝。
+
+响应包含`sample_count`、按请求顺序返回的`comparison_results`、整体任务与时长差异资格、平均提升率、当前要求的提升率阈值及是否达标。新创建的DebugComparison Task会在metadata中记录`comparison_kind`、manifest路径和可为空的`build_task_id`；改动前仅含`debug_workload_manifest`的历史DebugComparison也可用于汇总。

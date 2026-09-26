@@ -150,7 +150,16 @@ class CoDebugTaskService:
     async def create_schedule_comparison(
         self,
         request: ScheduleComparisonRequest,
+        *,
+        _allow_debug_metadata: bool = False,
     ) -> TaskRecord:
+        debug_metadata_keys = {
+            "comparison_kind",
+            "debug_workload_manifest",
+            "build_task_id",
+        }
+        if not _allow_debug_metadata and debug_metadata_keys.intersection(request.metadata):
+            raise AppError("debug comparison metadata is reserved")
         self._require_build_task(request.project_id, request.build_task_id)
 
         async def execute(context: ManagedTaskContext) -> ManagedTaskResult:
@@ -238,8 +247,17 @@ class CoDebugTaskService:
                 workloads=workloads,
                 core_ids=request.core_ids,
                 timeout_seconds=request.timeout_seconds,
-                metadata={"debug_workload_manifest": manifest_path},
-            )
+                metadata={
+                    "comparison_kind": "debug-batch",
+                    "debug_workload_manifest": manifest_path,
+                    "build_task_id": (
+                        str(request.build_task_id)
+                        if request.build_task_id is not None
+                        else None
+                    ),
+                },
+            ),
+            _allow_debug_metadata=True,
         )
 
     @staticmethod

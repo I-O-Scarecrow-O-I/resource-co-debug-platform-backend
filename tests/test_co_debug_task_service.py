@@ -299,6 +299,42 @@ async def test_schedule_comparison_uses_managed_workspaces_and_interprets_succes
 
 
 @pytest.mark.asyncio
+async def test_schedule_comparison_rejects_reserved_debug_metadata(tmp_path) -> None:
+    co_debug, task_service, workspace_service = _services(tmp_path)
+    project = await _project(workspace_service)
+
+    try:
+        for metadata in (
+            {"comparison_kind": "debug-batch"},
+            {"debug_workload_manifest": "debug-workloads.json"},
+            {"build_task_id": str(uuid4())},
+        ):
+            with pytest.raises(AppError, match="debug comparison metadata is reserved"):
+                await co_debug.create_schedule_comparison(
+                    ScheduleComparisonRequest(
+                        project_id=project.id,
+                        workloads=[
+                            ScheduleWorkloadSpec(
+                                name="comparison",
+                                tasks=[
+                                    TaskExecutionSpec(
+                                        name="success",
+                                        command=["success-tool"],
+                                    )
+                                ],
+                            )
+                        ],
+                        metadata=metadata,
+                    )
+                )
+
+        assert task_service.list_tasks() == []
+    finally:
+        await task_service.shutdown(grace_seconds=0)
+        task_service.close_resources_when_idle()
+
+
+@pytest.mark.asyncio
 async def test_debug_accepts_absolute_project_source_executable_path(tmp_path) -> None:
     co_debug, task_service, workspace_service = _services(tmp_path)
     project = await _project(workspace_service)
