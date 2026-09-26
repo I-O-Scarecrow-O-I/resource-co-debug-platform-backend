@@ -7,7 +7,7 @@ from zipfile import ZipFile
 
 import pytest
 from fastapi import UploadFile
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.core.errors import AppError
 from app.main import create_app
@@ -30,6 +30,7 @@ from app.platform.services.workspace_service import WorkspaceService
 class FakeRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], Path]] = []
+        self.debug_executable_contents: list[str] = []
 
     async def run(
         self,
@@ -45,6 +46,10 @@ class FakeRunner:
         if command == ["build-all"]:
             for index in range(1, 4):
                 (cwd / f"case-{index}" / "app").write_text("binary", encoding="utf-8")
+        elif command and command[0] == "gdb":
+            self.debug_executable_contents.append(
+                (cwd / command[-2]).read_text(encoding="utf-8")
+            )
         return ProcessResult(exit_code=0, elapsed_ms=10)
 
 
@@ -70,12 +75,19 @@ def _manifest() -> dict:
     }
 
 
-async def _project(workspaces: WorkspaceService, manifest: dict):
+async def _project(
+    workspaces: WorkspaceService,
+    manifest: dict,
+    *,
+    include_executables: bool = False,
+):
     archive = io.BytesIO()
     with ZipFile(archive, "w") as zip_file:
         zip_file.writestr("debug-workloads.json", json.dumps(manifest))
         for index in range(1, 4):
             zip_file.writestr(f"case-{index}/source.c", "int main(void) { return 0; }")
+            if include_executables:
+                zip_file.writestr(f"case-{index}/app", "binary")
     archive.seek(0)
     return await workspaces.create_from_archive(
         UploadFile(file=archive, filename="three-cases.zip")
@@ -130,16 +142,37 @@ async def test_three_debug_workloads_use_successful_build_snapshot(tmp_path) -> 
         completed = await _wait_for_terminal(service, created.id)
         assert completed.status == TaskStatus.SUCCEEDED
         assert completed.result["workload_count"] == 3
+        assert completed.metadata["comparison_kind"] == "debug-batch"
         assert completed.metadata["debug_workload_manifest"] == "debug-workloads.json"
+        assert completed.metadata["build_task_id"] == str(build.id)
         assert len(runner.calls) == 13
         commands = runner.calls[1:]
         assert {cwd.name for _, cwd in commands} == {"case-1", "case-2", "case-3"}
-        for command, cwd in commands:
+        for command, _cwd in commands:
             assert command[:5] == ["gdb", "--nx", "--quiet", "--batch", "--return-child-result"]
             assert ["-ex", "break main"] == command[7:9]
             assert command[-3] == "--args"
             assert command[-2] == "./app"
-            assert (cwd / "app").read_text(encoding="utf-8") == "binary"
+        assert runner.debug_executable_contents == ["binary"] * 12
+    finally:
+        await service.shutdown(grace_seconds=0)
+        service.close_resources_when_idle()
+
+
+@pytest.mark.asyncio
+async def test_debug_comparison_metadata_allows_null_build_task_id(tmp_path) -> None:
+    co_debug, service, workspaces, _ = _services(tmp_path)
+    project = await _project(workspaces, _manifest(), include_executables=True)
+    try:
+        created = await co_debug.create_debug_schedule_comparison(
+            DebugComparisonRequest(project_id=project.id, core_ids=[0, 1])
+        )
+        assert created.metadata == {
+            "comparison_kind": "debug-batch",
+            "debug_workload_manifest": "debug-workloads.json",
+            "build_task_id": None,
+        }
+        assert (await _wait_for_terminal(service, created.id)).status == TaskStatus.SUCCEEDED
     finally:
         await service.shutdown(grace_seconds=0)
         service.close_resources_when_idle()
@@ -181,15 +214,22 @@ async def test_debug_comparison_route_accepts_project_and_build_ids(tmp_path) ->
     co_debug, service, workspaces, _ = _services(tmp_path)
     project = await _project(workspaces, _manifest())
     app = create_app()
-    app.dependency_overrides[get_co_debug_task_service] = lambda: co_debug
+
+    async def override_co_debug_task_service() -> CoDebugTaskService:
+        return co_debug
+
+    app.dependency_overrides[get_co_debug_task_service] = override_co_debug_task_service
     try:
         build = await co_debug.create_build_task(
             BuildTaskRequest(project_id=project.id, command=["build-all"])
         )
         assert (await _wait_for_terminal(service, build.id)).status == TaskStatus.SUCCEEDED
 
-        with TestClient(app) as client:
-            response = client.post(
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post(
                 "/api/v1/modules/co-debug/debug/comparisons",
                 json={
                     "project_id": str(project.id),

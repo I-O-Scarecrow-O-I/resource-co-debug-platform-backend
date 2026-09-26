@@ -71,6 +71,41 @@
         "title": "ApiResponse[DebugBreakpointResponse]",
         "type": "object"
       },
+      "ApiResponse_DebugComparisonAggregateResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugComparisonAggregateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugComparisonAggregateResponse]",
+        "type": "object"
+      },
       "ApiResponse_DebugExpressionResponse_": {
         "properties": {
           "data": {
@@ -602,6 +637,45 @@
         "title": "ApiResponse[list[BuildArtifactResponse]]",
         "type": "object"
       },
+      "ApiResponse_list_DebugBuildCandidate__": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DebugBuildCandidate"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[list[DebugBuildCandidate]]",
+        "type": "object"
+      },
       "ApiResponse_list_LogEvent__": {
         "properties": {
           "data": {
@@ -1123,6 +1197,144 @@
         "title": "DebugBreakpointResponse",
         "type": "object"
       },
+      "DebugBuildCandidate": {
+        "properties": {
+          "build_kind": {
+            "title": "Build Kind",
+            "type": "string"
+          },
+          "build_task_id": {
+            "format": "uuid",
+            "title": "Build Task Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "executables": {
+            "items": {
+              "$ref": "#/components/schemas/DebugExecutableCandidate"
+            },
+            "title": "Executables",
+            "type": "array"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "build_task_id",
+          "build_kind",
+          "created_at"
+        ],
+        "title": "DebugBuildCandidate",
+        "type": "object"
+      },
+      "DebugComparisonAggregateResponse": {
+        "properties": {
+          "all_duration_spreads_eligible": {
+            "title": "All Duration Spreads Eligible",
+            "type": "boolean"
+          },
+          "all_tasks_succeeded": {
+            "title": "All Tasks Succeeded",
+            "type": "boolean"
+          },
+          "average_improvement_rate": {
+            "title": "Average Improvement Rate",
+            "type": "number"
+          },
+          "comparison_results": {
+            "items": {
+              "$ref": "#/components/schemas/DebugComparisonHistoryResult"
+            },
+            "title": "Comparison Results",
+            "type": "array"
+          },
+          "meets_average_improvement_requirement": {
+            "title": "Meets Average Improvement Requirement",
+            "type": "boolean"
+          },
+          "required_improvement_rate": {
+            "title": "Required Improvement Rate",
+            "type": "number"
+          },
+          "sample_count": {
+            "title": "Sample Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sample_count",
+          "comparison_results",
+          "all_duration_spreads_eligible",
+          "all_tasks_succeeded",
+          "average_improvement_rate",
+          "required_improvement_rate",
+          "meets_average_improvement_requirement"
+        ],
+        "title": "DebugComparisonAggregateResponse",
+        "type": "object"
+      },
+      "DebugComparisonHistoryResult": {
+        "properties": {
+          "all_duration_spreads_eligible": {
+            "title": "All Duration Spreads Eligible",
+            "type": "boolean"
+          },
+          "all_tasks_succeeded": {
+            "title": "All Tasks Succeeded",
+            "type": "boolean"
+          },
+          "average_improvement_rate": {
+            "title": "Average Improvement Rate",
+            "type": "number"
+          },
+          "build_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Build Task Id"
+          },
+          "comparison_task_id": {
+            "format": "uuid",
+            "title": "Comparison Task Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "comparison_task_id",
+          "project_id",
+          "build_task_id",
+          "created_at",
+          "average_improvement_rate",
+          "all_duration_spreads_eligible",
+          "all_tasks_succeeded"
+        ],
+        "title": "DebugComparisonHistoryResult",
+        "type": "object"
+      },
       "DebugComparisonRequest": {
         "properties": {
           "build_task_id": {
@@ -1179,6 +1391,42 @@
           "project_id"
         ],
         "title": "DebugComparisonRequest",
+        "type": "object"
+      },
+      "DebugComparisonSummaryRequest": {
+        "properties": {
+          "comparison_task_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Comparison Task Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "comparison_task_ids"
+        ],
+        "title": "DebugComparisonSummaryRequest",
+        "type": "object"
+      },
+      "DebugExecutableCandidate": {
+        "properties": {
+          "executable_path": {
+            "title": "Executable Path",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "executable_path"
+        ],
+        "title": "DebugExecutableCandidate",
         "type": "object"
       },
       "DebugExpressionRequest": {
@@ -2340,6 +2588,76 @@
         "summary": "List Backend Modules",
         "tags": [
           "modules"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/candidates": {
+      "get": {
+        "operationId": "list_debug_candidates_api_v1_modules_co_debug_debug_candidates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_list_DebugBuildCandidate__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Debug Candidates",
+        "tags": [
+          "co_debug"
         ]
       }
     },
@@ -3649,6 +3967,67 @@
           }
         },
         "summary": "Build Success Rate",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/metrics/debug-comparison-summary": {
+      "post": {
+        "operationId": "summarize_debug_comparisons_api_v1_modules_co_debug_metrics_debug_comparison_summary_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugComparisonSummaryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugComparisonAggregateResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summarize Debug Comparisons",
         "tags": [
           "co_debug"
         ]

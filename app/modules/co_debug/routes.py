@@ -21,6 +21,13 @@ from app.modules.co_debug.schemas.dependencies import (
     DependencyRepairBuildRequest,
     DependencyRepairResponse,
 )
+from app.modules.co_debug.schemas.metrics import (
+    DebugComparisonAggregateResponse,
+    DebugComparisonSummaryRequest,
+)
+from app.modules.co_debug.services.debug_comparison_summary_service import (
+    DebugComparisonSummaryService,
+)
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.interactive_debug_service import (
@@ -31,6 +38,7 @@ from app.modules.co_debug.services.repair_build_service import DependencyRepairB
 from app.modules.co_debug.services.task_service import CoDebugTaskService
 from app.platform.api.deps import (
     get_co_debug_task_service,
+    get_debug_comparison_summary_service,
     get_debug_service,
     get_dependency_repair_build_service,
     get_dependency_service,
@@ -41,6 +49,20 @@ from app.platform.schemas.common import ApiResponse
 from app.platform.schemas.tasks import DebugTaskRequest, TaskResponse
 
 router = APIRouter()
+
+
+@router.post(
+    "/metrics/debug-comparison-summary",
+    response_model=ApiResponse[DebugComparisonAggregateResponse],
+)
+async def summarize_debug_comparisons(
+    request: DebugComparisonSummaryRequest,
+    service: Annotated[
+        DebugComparisonSummaryService,
+        Depends(get_debug_comparison_summary_service),
+    ],
+) -> ApiResponse[DebugComparisonAggregateResponse]:
+    return ApiResponse.ok(service.summarize(request.comparison_task_ids))
 
 
 @router.post("/debug/comparisons", response_model=ApiResponse[TaskResponse])

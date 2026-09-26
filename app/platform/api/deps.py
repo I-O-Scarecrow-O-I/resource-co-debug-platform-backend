@@ -10,6 +10,9 @@ from app.core.config import get_settings as load_settings
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
 )
+from app.modules.co_debug.services.debug_comparison_summary_service import (
+    DebugComparisonSummaryService,
+)
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
 from app.modules.co_debug.services.interactive_debug_service import (
@@ -103,6 +106,16 @@ def get_task_service() -> TaskService:
     with _task_services_lock:
         _task_services.add(task_service)
     return task_service
+
+
+def get_debug_comparison_summary_service(
+    task_service: Annotated[TaskService, Depends(get_task_service)],
+    metric_service: Annotated[AcceptanceMetricService, Depends(get_metric_service)],
+) -> DebugComparisonSummaryService:
+    return DebugComparisonSummaryService(
+        task_service=task_service,
+        metric_service=metric_service,
+    )
 
 
 def get_co_debug_task_service(
