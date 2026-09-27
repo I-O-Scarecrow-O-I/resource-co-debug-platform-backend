@@ -28,13 +28,14 @@ class ProjectModel:
 class MakeRule:
     target: str
     prerequisites: list[str] = field(default_factory=list)
+    recipes: list[str] = field(default_factory=list)
     line_number: int = 0
-
 
 @dataclass(slots=True)
 class MakefileModel:
     makefile_path: Path
     rules: list[MakeRule] = field(default_factory=list)
+    variables: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
