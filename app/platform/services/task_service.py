@@ -707,6 +707,14 @@ class TaskService:
             if interactive_failure is not None and task.status != TaskStatus.CANCELLED:
                 self._mark_failed(task, str(interactive_failure))
                 task.progress = 100
+            if (
+                task.elapsed_ms is None
+                and task.started_at is not None
+                and task.finished_at is not None
+            ):
+                task.elapsed_ms = max(
+                    0, round((task.finished_at - task.started_at).total_seconds() * 1000)
+                )
             self._finalize_with_cleanup(
                 task,
                 lambda finalized: self._finish_managed_task_workspaces(

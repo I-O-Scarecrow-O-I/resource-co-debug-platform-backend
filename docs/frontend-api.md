@@ -73,6 +73,11 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 `status`、`progress`（0–100）、`error`、`result`，在终态停止轮询；日志 WebSocket 用于增量展示，
 不替代任务状态查询或最终结果读取。
 
+由当前运行器正常最终化的已启动 managed task，其终态 `TaskResponse.elapsed_ms` 为非负毫秒：
+模块提供显式值时保留，否则按 `started_at` 与 `finished_at` 补算；运行中取消也会持久化该值。
+未启动即取消时仍为 `null`。进程重启恢复遗留的 PENDING/RUNNING 任务时不补算耗时，
+该恢复路径的 `elapsed_ms` 可能为 `null`。
+
 ### 漏洞扫描与代码生成自检
 
 通过 `POST /api/v1/modules/vulnerability/tasks` 创建扫描任务，JSON body 及字段约束以
@@ -108,6 +113,9 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 任务 `status` 与 coverage：`deep` 要求 builtin 为 `completed`，且 Cppcheck 至少有 `completed` 或
 `partial` coverage 才能通过；`partial` 明确表示部分覆盖，不代表完整 C/C++ 扫描。分析器不可用或未达到要求时任务会失败，
 coverage 仍可能包含诊断信息。
+
+`scan_type` 当前只选择任务的 `task_type`，不改变扫描结果的分类契约。`result` 不提供目标/额外发现分类、
+TP/FN/FP、检出率、误报率或达标判断；原始 findings 是候选发现，前端不能据此自行推算合同指标。
 
 若扫描代码生成结果，传 `source_task_id` 为同一项目中状态为 `SUCCEEDED` 的代码生成任务 ID，
 `target_files` 写生成文件相对于该任务 workspace 的路径。后端从该任务 workspace 建立扫描副本，原项目

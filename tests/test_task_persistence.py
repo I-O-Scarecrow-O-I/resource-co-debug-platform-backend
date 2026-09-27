@@ -107,6 +107,9 @@ def test_cancel_request_wins_over_stale_worker_finalization(tmp_path, status: Ta
     canceller_store.request_cancel(task.id)
     stale_worker_task.status = status
     stale_worker_task.finished_at = datetime(2026, 9, 2, 12, 36, tzinfo=UTC)
+    stale_worker_task.elapsed_ms = 123
+    stale_worker_task.result = {"worker": True}
+    stale_worker_task.progress = 100
     stale_worker_task.error = "command failed" if status == TaskStatus.FAILED else None
 
     finalized = worker_store.finalize(stale_worker_task)
@@ -114,7 +117,12 @@ def test_cancel_request_wins_over_stale_worker_finalization(tmp_path, status: Ta
     assert finalized.status == TaskStatus.CANCELLED
     assert finalized.error == "cancelled"
     assert finalized.finished_at is not None
-    assert canceller_store.require(task.id).status == TaskStatus.CANCELLED
+    assert finalized.elapsed_ms == 123
+    assert finalized.result == task.result
+    assert finalized.progress == task.progress
+    restored = canceller_store.require(task.id)
+    assert restored.status == TaskStatus.CANCELLED
+    assert restored.elapsed_ms == 123
 
 
 def test_artifact_availability_is_written_on_success_and_persists(tmp_path) -> None:
@@ -303,6 +311,8 @@ def test_pending_cancel_writes_terminal_fields_and_late_cancel_keeps_terminal(tm
     assert cancelled.status == TaskStatus.CANCELLED
     assert cancelled.error == "cancelled"
     assert cancelled.finished_at is not None
+    assert cancelled.started_at is None
+    assert cancelled.elapsed_ms is None
 
     for status in [TaskStatus.SUCCEEDED, TaskStatus.FAILED]:
         task = _task()

@@ -13,6 +13,7 @@ from app.core.errors import AppError, NotFoundError
 from app.core.time import utc_now
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
+from app.platform.schemas.tasks import TaskResponse
 from app.platform.services.log_service import TaskLogService
 from app.platform.services.task_execution import ManagedTaskContext, ManagedTaskResult
 from app.platform.services.task_service import TaskService
@@ -113,6 +114,7 @@ async def test_managed_task_reports_progress_and_cleans_multiple_workspaces(tmp_
         assert completed.result == {"workspaces": 2}
         assert completed.exit_code == 0
         assert completed.elapsed_ms == 12
+        assert TaskResponse.from_record(completed).elapsed_ms == 12
         assert completed.progress == 100
         assert completed.finished_at is not None
         messages = [event.message for event in service.log_service.history(created.id)]
@@ -121,6 +123,40 @@ async def test_managed_task_reports_progress_and_cleans_multiple_workspaces(tmp_
         assert messages[-1] == "task succeeded"
         assert len(workspaces) == 2
         await _wait_for_cleanup(project.root_path / "tasks" / str(created.id))
+    finally:
+        await _close(service)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TaskStatus.SUCCEEDED, TaskStatus.FAILED])
+async def test_managed_task_without_module_elapsed_reports_platform_duration(
+    tmp_path, status
+) -> None:
+    service, workspace_service = _service(tmp_path)
+    project = await _create_project(workspace_service)
+
+    async def execute(_: ManagedTaskContext) -> ManagedTaskResult:
+        await asyncio.sleep(0.02)
+        return ManagedTaskResult(status=status)
+
+    try:
+        created = await service.create_managed_task(
+            module=BackendModuleName.CO_DEBUG,
+            project_id=project.id,
+            task_type=TaskType.SCHEDULE_EXPERIMENT,
+            command=["managed", "platform-duration"],
+            execute=execute,
+        )
+        completed = await _wait_for_terminal(service, created.id)
+        response = TaskResponse.from_record(completed)
+
+        assert response.status == status
+        assert response.started_at is not None
+        assert response.finished_at is not None
+        assert response.elapsed_ms is not None
+        assert response.elapsed_ms >= 20
+        duration_ms = (response.finished_at - response.started_at).total_seconds() * 1000
+        assert abs(response.elapsed_ms - duration_ms) <= 1
     finally:
         await _close(service)
 
@@ -387,6 +423,8 @@ async def test_managed_task_executor_exception_fails_and_cleans_workspace(tmp_pa
         assert completed.error == "executor failed"
         assert completed.progress == 100
         assert completed.finished_at is not None
+        assert completed.elapsed_ms is not None
+        assert completed.elapsed_ms >= 0
         await _wait_for_cleanup(project.root_path / "tasks" / str(created.id))
     finally:
         await _close(service)
@@ -416,6 +454,8 @@ async def test_managed_task_uses_one_total_timeout_and_cleans_workspace(tmp_path
         assert completed.status == TaskStatus.FAILED
         assert completed.error == "managed task timed out after 0.02 seconds"
         assert completed.progress == 100
+        assert completed.elapsed_ms is not None
+        assert completed.elapsed_ms >= 0
         await _wait_for_cleanup(project.root_path / "tasks" / str(created.id))
     finally:
         await _close(service)
@@ -454,6 +494,15 @@ async def test_running_managed_task_cooperatively_cancels_without_leaking_worksp
         assert completed.status == TaskStatus.CANCELLED
         assert completed.error == "cancelled"
         assert completed.progress < 100
+        assert completed.started_at is not None
+        assert completed.finished_at is not None
+        reopened_store = TaskStore(tmp_path / "tasks.sqlite3")
+        try:
+            restored = reopened_store.require(created.id)
+            assert restored.elapsed_ms is not None
+            assert restored.elapsed_ms >= 0
+        finally:
+            reopened_store.close()
         await _wait_for_cleanup(project.root_path / "tasks" / str(created.id))
     finally:
         await _close(service)

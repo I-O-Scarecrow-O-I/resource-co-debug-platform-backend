@@ -55,6 +55,11 @@ Windows 本地会话应如上设置 `LIBCLANG_PATH`。当前已使用
 若 builtin 或 Cppcheck 未达到要求，deep 扫描会失败并保留 coverage 诊断。`partial` coverage 只说明有部分结果，不能
 视为完整覆盖。代码生成自检按目标文件扩展名选择分析器：C/C++ 使用 Cppcheck，其他文件使用 builtin。
 
+NaturalCC `5ec92ac` 为 C/C++ 增加了无宽度 `scanf` 等候选检测和语义复核清单；清单写入文本 `report`，
+其结构化 `review_guidance` 当前未由后端单独透传。内建 `cwe-362` 仅为低置信候选，内建 `cwe-78` 不支持
+C/C++；Cppcheck 发现也可能没有 CWE。`severity_threshold` 和 `max_findings` 会筛选、截断发现项，
+不能把返回的 findings 数量直接当作合同检出率或误报率的计算依据。本轮尚未对 `5ec92ac` 做真实服务联调。
+
 Pipeline 请求固定 `auto_fix=false`，只执行分析；这个直接的扫描 HTTP 调用不需要 Agent 批准 `execute`，
 也不要求扫描请求提供模型 API key。它不改变 NaturalCC Agent deferred-approval 政策：
 `NATURALCC_APPROVE_EXECUTE=false` 继续保持现状，仍只批准 write。不要为了启用扫描而改成 `true`。
@@ -67,6 +72,7 @@ TSan 结果日志必须先位于扫描所用 workspace 内，再通过相对路�
 `artifacts/tsan.log`。当扫描代码生成产物时，设置 `source_task_id` 为同项目的成功代码生成任务 ID，
 目标文件和 TSan 日志路径都相对于该任务 workspace；普通项目扫描则相对于项目 workspace。后端会验证
 文件存在且路径留在 workspace 内，不接受本机绝对路径或 workspace 外文件。
+当前流程只导入已有 TSan 日志，不会自动编译或运行目标程序；openEuler 下的自动执行能力尚未验证。
 
 ## 工具与 deferred approval
 

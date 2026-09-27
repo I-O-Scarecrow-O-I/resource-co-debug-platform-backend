@@ -600,7 +600,7 @@ class TaskStore:
                         WHEN cancel_requested = 1 OR ? THEN exit_code ELSE ?
                     END,
                     elapsed_ms = CASE
-                        WHEN cancel_requested = 1 OR ? THEN elapsed_ms ELSE ?
+                        WHEN cancel_requested = 1 OR ? THEN COALESCE(?, elapsed_ms) ELSE ?
                     END,
                     progress = CASE
                         WHEN cancel_requested = 1 OR ? THEN progress ELSE MAX(progress, ?)
@@ -622,6 +622,7 @@ class TaskStore:
                     is_cancelled,
                     task.exit_code,
                     is_cancelled,
+                    task.elapsed_ms,
                     task.elapsed_ms,
                     is_cancelled,
                     task.progress,

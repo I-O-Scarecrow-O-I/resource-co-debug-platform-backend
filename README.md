@@ -48,6 +48,9 @@ O:\Code\resource-co-debug-platform-backend\scripts\run-dev.ps1
 Default URL: `http://localhost:8000`
 
 The reusable local environment is documented in `docs/environment.md`.
+For the complete Windows setup, process connection model, and NaturalCC integration walkthrough, see [docs/windows-local-deployment-guide.md](docs/windows-local-deployment-guide.md).
+For browser-based frontend/backend integration steps and current UI coverage limits, see [docs/frontend-backend-browser-test-guide.md](docs/frontend-backend-browser-test-guide.md).
+For the frontend implementation specification and current indicator 1/3/5 testability, see [docs/frontend-indicator-1-3-5-integration-spec.md](docs/frontend-indicator-1-3-5-integration-spec.md).
 
 ## Frontend API Contract
 
