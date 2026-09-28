@@ -17,6 +17,7 @@ from app.modules.vulnerability.client import (
     PipelineError,
     analyzer_coverage_status,
 )
+from app.modules.vulnerability.results import validated_finding_summary
 from app.platform.domain.enums import BackendModuleName, TaskStatus, TaskType
 from app.platform.domain.task import TaskRecord
 from app.platform.services.task_execution import ManagedTaskContext, ManagedTaskResult
@@ -465,6 +466,16 @@ class CodeGenerationTaskService:
         coverage = artifacts.get("coverage") if isinstance(artifacts, dict) else None
         if not isinstance(findings, list) or not isinstance(coverage, list):
             return {"status": "failed", "error": "Pipeline self scan returned invalid artifacts"}
+        try:
+            finding_summary = validated_finding_summary(
+                artifacts.get("finding_summary"), findings, 30
+            )
+        except ValueError:
+            return {
+                "status": "failed",
+                "error": "Pipeline self scan returned invalid finding_summary",
+                "coverage": coverage,
+            }
         if done.get("files_modified"):
             return {
                 "status": "failed",
@@ -478,12 +489,15 @@ class CodeGenerationTaskService:
                 "error": f"{analyzer} scan coverage unavailable",
                 "coverage": coverage,
             }
-        return {
+        result = {
             "status": coverage_status,
             "findings": findings,
             "coverage": coverage,
             "report": done.get("report", ""),
         }
+        if finding_summary is not None:
+            result["finding_summary"] = finding_summary
+        return result
 
     def _create_self_scan_copy(
         self, context: ManagedTaskContext, workspace: Path, scan_copy: Path

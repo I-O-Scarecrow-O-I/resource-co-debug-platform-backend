@@ -463,6 +463,27 @@ def test_generated_code_self_scan_returns_pipeline_findings_and_coverage(
     assert client.get(f"/api/v1/tasks/{task['id']}/artifacts/generated.txt").content == b"generated"
 
 
+def test_self_scan_passes_valid_finding_summary(code_generation_api) -> None:
+    client, _, project, _, _, service, _ = code_generation_api
+    summary = {"candidate_count": 1, "returned_count": 1, "truncated": False, "max_findings": 30}
+    done = {"type": "done", "status": "success", "artifacts": {
+        "findings": [{"rule_id": "cwe-398"}],
+        "coverage": [{"engine": "builtin", "status": "completed"}],
+        "finding_summary": summary,
+    }}
+    service.pipeline = PipelineClient(
+        base_url="http://naturalcc.test", connect_timeout_seconds=1,
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, content=(json.dumps(done) + "\n").encode()
+        )),
+    )
+    response = client.post(
+        "/api/v1/modules/code-generation/tasks", json=_request_payload(str(project.id))
+    )
+    task = _wait_for_terminal(client, response.json()["data"]["id"])
+    assert task["result"]["self_scan"]["finding_summary"] == summary
+
+
 def test_self_scan_includes_existing_changed_source_files(code_generation_api) -> None:
     client, _, project, _, _, service, remote = code_generation_api
     remote.generated_files = {"src/generated.c": "int generated(void) { return 1; }\n"}
