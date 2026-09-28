@@ -9,7 +9,6 @@ from app.modules.co_debug.dependency.models import (
     ProjectModel,
 )
 
-
 _SOURCE_SUFFIXES = {
     ".c",
     ".cc",
@@ -60,14 +59,47 @@ class DependencyAnalyzer:
                     dependency,
                 )
 
-        root = project.source_root
-        include_dirs = self._collect_include_dirs(project)
+        project_root = project.source_root
+        analysis_root = (
+            makefile.makefile_path.parent
+            if makefile is not None
+            else project_root
+        )
+        include_dirs = self._collect_include_dirs(
+            project,
+            analysis_root,
+        )
+        generated_targets = {
+            self._normalize_path(rule.target)
+            for rule in makefile.rules
+        } if makefile is not None else set()
 
         for source_file in project.source_files:
+            source_path = project_root / source_file
+
+            try:
+                analyzed_source = source_path.relative_to(
+                    analysis_root
+                ).as_posix()
+            except ValueError:
+                # 选中的 Makefile 只负责其所在工程子树。
+                continue
+
+            source_include_dirs = list(include_dirs)
+
+            if makefile is not None:
+                source_include_dirs.extend(
+                    self._recipe_include_dirs_for_source(
+                        makefile,
+                        analyzed_source,
+                    )
+                )
+
             dependency = self._analyze_source(
-                root=root,
-                source_file=source_file,
-                include_dirs=include_dirs,
+                root=analysis_root,
+                source_file=analyzed_source,
+                include_dirs=self._unique(source_include_dirs),
+                generated_targets=generated_targets,
             )
 
             # 如果 recipe 已经告诉我们
@@ -75,13 +107,13 @@ class DependencyAnalyzer:
             # 就把 -MM 找到的 header 也挂到该真实 object target。
             recipe_target = self._find_recipe_target_for_source(
                 merged,
-                source_file,
+                analyzed_source,
             )
 
             if recipe_target is not None:
                 dependency = ActualDependency(
                     target=recipe_target,
-                    source_file=source_file,
+                    source_file=analyzed_source,
                     dependencies=dependency.dependencies,
                 )
 
@@ -121,37 +153,7 @@ class DependencyAnalyzer:
         command: str,
         rule: MakeRule,
     ) -> ActualDependency | None:
-        command = command.strip()
-
-        if not command:
-            return None
-
-        # Make recipe command modifiers: @ - +
-        while command and command[0] in "@-+":
-            command = command[1:].lstrip()
-
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            return None
-
-        if not tokens:
-            return None
-
-        # env VAR=x g++ ...
-        while tokens and "=" in tokens[0] and not tokens[0].startswith("-"):
-            left, _, _ = tokens[0].partition("=")
-            if not left.replace("_", "").isalnum():
-                break
-            tokens = tokens[1:]
-
-        if not tokens:
-            return None
-
-        # ccache g++ ...
-        if Path(tokens[0]).name in {"ccache", "sccache"}:
-            tokens = tokens[1:]
-
+        tokens = self._command_tokens(command)
         if not tokens:
             return None
 
@@ -313,11 +315,19 @@ class DependencyAnalyzer:
     def _collect_include_dirs(
         self,
         project: ProjectModel,
+        analysis_root: Path,
     ) -> list[str]:
         include_dirs: set[str] = {"."}
 
         for header_file in project.header_files:
-            parent = Path(header_file).parent
+            header_path = project.source_root / header_file
+
+            try:
+                parent = header_path.parent.relative_to(
+                    analysis_root
+                )
+            except ValueError:
+                continue
 
             if str(parent) != ".":
                 include_dirs.add(
@@ -331,6 +341,7 @@ class DependencyAnalyzer:
         root: Path,
         source_file: str,
         include_dirs: list[str],
+        generated_targets: set[str],
     ) -> ActualDependency:
         compiler = self._compiler_for_source(
             source_file
@@ -339,6 +350,7 @@ class DependencyAnalyzer:
         command = [
             compiler,
             "-MM",
+            "-MG",
             source_file,
         ]
 
@@ -367,10 +379,130 @@ class DependencyAnalyzer:
             )
         )
 
+        dependencies = [
+            self._resolve_generated_dependency(
+                root=root,
+                dependency=item,
+                include_dirs=include_dirs,
+                generated_targets=generated_targets,
+            )
+            for item in dependencies
+        ]
+
         return ActualDependency(
             target=target,
             source_file=source_file,
             dependencies=dependencies,
+        )
+
+    def _recipe_include_dirs_for_source(
+        self,
+        makefile: MakefileModel,
+        source_file: str,
+    ) -> list[str]:
+        normalized_source = self._normalize_path(source_file)
+        include_dirs: list[str] = []
+
+        for rule in makefile.rules:
+            for recipe in rule.recipes:
+                command = self._expand_automatic_variables(recipe, rule)
+
+                for command_part in self._split_shell_commands(command):
+                    tokens = self._command_tokens(command_part)
+
+                    if not tokens or Path(tokens[0]).name not in {
+                        "gcc", "g++", "clang", "clang++", "cc", "c++",
+                    }:
+                        continue
+
+                    sources = {
+                        self._normalize_path(token)
+                        for token in tokens[1:]
+                        if self._has_suffix(token, _SOURCE_SUFFIXES)
+                    }
+
+                    if normalized_source not in sources:
+                        continue
+
+                    include_dirs.extend(self._include_dirs_from_tokens(tokens))
+
+        return self._unique(include_dirs)
+
+    @staticmethod
+    def _command_tokens(command: str) -> list[str]:
+        command = command.strip()
+
+        while command and command[0] in "@-+":
+            command = command[1:].lstrip()
+
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return []
+
+        while tokens and "=" in tokens[0] and not tokens[0].startswith("-"):
+            left, _, _ = tokens[0].partition("=")
+            if not left.replace("_", "").isalnum():
+                break
+            tokens = tokens[1:]
+
+        if tokens and Path(tokens[0]).name in {"ccache", "sccache"}:
+            tokens = tokens[1:]
+
+        return tokens
+
+    @staticmethod
+    def _include_dirs_from_tokens(tokens: list[str]) -> list[str]:
+        include_dirs: list[str] = []
+        index = 1
+
+        while index < len(tokens):
+            token = tokens[index]
+
+            if token == "-I" and index + 1 < len(tokens):
+                include_dirs.append(tokens[index + 1])
+                index += 2
+                continue
+
+            if token.startswith("-I") and len(token) > 2:
+                include_dirs.append(token[2:])
+
+            index += 1
+
+        return include_dirs
+
+    def _resolve_generated_dependency(
+        self,
+        root: Path,
+        dependency: str,
+        include_dirs: list[str],
+        generated_targets: set[str],
+    ) -> str:
+        normalized = self._normalize_path(dependency)
+
+        if (root / normalized).exists():
+            return normalized
+
+        candidates = {
+            self._normalize_path((Path(include_dir) / normalized).as_posix())
+            for include_dir in include_dirs
+        }
+        candidates.add(normalized)
+        matches = candidates & generated_targets
+
+        if len(matches) == 1:
+            return next(iter(matches))
+
+        if matches:
+            raise RuntimeError(
+                "依赖分析失败: 缺失头文件 "
+                f"{dependency} 匹配多个 Makefile target: "
+                f"{', '.join(sorted(matches))}"
+            )
+
+        raise RuntimeError(
+            "依赖分析失败: 缺失头文件 "
+            f"{dependency} 无法解析为 Makefile generated target"
         )
 
     @staticmethod
