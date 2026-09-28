@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import timedelta
 from uuid import uuid4
-from zipfile import ZipFile, ZipInfo
+from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
 from fastapi import UploadFile, WebSocketDisconnect
@@ -253,18 +253,118 @@ async def test_unsafe_archive_entry_removes_project_directory(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_archive_resource_limits_cover_formal_security_projects() -> None:
+    assert WorkspaceService._MAX_ZIP_MEMBERS == 5_000
+    assert WorkspaceService._MAX_ZIP_FILE_BYTES == 16 * 1024 * 1024
+    assert WorkspaceService._MAX_ZIP_TOTAL_BYTES == 64 * 1024 * 1024
+
+
 @pytest.mark.asyncio
-async def test_archive_resource_limits_are_rejected_without_orphans(tmp_path, monkeypatch) -> None:
+async def test_archive_accepts_maximum_member_count(tmp_path) -> None:
     archive = io.BytesIO()
     with ZipFile(archive, "w") as zip_file:
-        zip_file.writestr("first.txt", "one")
-        zip_file.writestr("second.txt", "two")
+        for index in range(WorkspaceService._MAX_ZIP_MEMBERS):
+            zip_file.writestr(f"entries/{index}.txt", "")
     archive.seek(0)
-    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_MEMBERS", 1)
+
+    project = await WorkspaceService(tmp_path).create_from_archive(
+        UploadFile(file=archive, filename="maximum-members.zip")
+    )
+
+    assert (project.source_path / "entries" / "4999.txt").is_file()
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_more_than_maximum_member_count(tmp_path) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        for index in range(WorkspaceService._MAX_ZIP_MEMBERS + 1):
+            zip_file.writestr(f"entries/{index}.txt", "")
+    archive.seek(0)
 
     with pytest.raises(AppError, match="too many entries"):
         await WorkspaceService(tmp_path).create_from_archive(
-            UploadFile(file=archive, filename="limited.zip")
+            UploadFile(file=archive, filename="too-many-members.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_archive_accepts_file_at_size_limit(tmp_path, monkeypatch) -> None:
+    size = 8
+    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_FILE_BYTES", size)
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("source.bin", b"x" * size)
+    archive.seek(0)
+
+    project = await WorkspaceService(tmp_path).create_from_archive(
+        UploadFile(file=archive, filename="maximum-file.zip")
+    )
+
+    assert (project.source_path / "source.bin").stat().st_size == size
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_file_over_size_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_FILE_BYTES", 8)
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("source.bin", b"x" * 9)
+    archive.seek(0)
+
+    with pytest.raises(AppError, match="zip entry exceeds size limit"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="oversized-file.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_archive_accepts_total_at_size_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_TOTAL_BYTES", 8)
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("first.bin", b"x" * 4)
+        zip_file.writestr("second.bin", b"y" * 4)
+    archive.seek(0)
+
+    project = await WorkspaceService(tmp_path).create_from_archive(
+        UploadFile(file=archive, filename="maximum-total.zip")
+    )
+
+    assert sum(path.stat().st_size for path in project.source_path.iterdir()) == 8
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_total_over_size_limit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(WorkspaceService, "_MAX_ZIP_TOTAL_BYTES", 8)
+    archive = io.BytesIO()
+    with ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("first.bin", b"x" * 4)
+        zip_file.writestr("second.bin", b"y" * 5)
+    archive.seek(0)
+
+    with pytest.raises(AppError, match="zip archive exceeds total size limit"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="oversized-total.zip")
+        )
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_excessive_compression_ratio(tmp_path) -> None:
+    archive = io.BytesIO()
+    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as zip_file:
+        zip_file.writestr("compressed.bin", b"0" * 10_000)
+    archive.seek(0)
+
+    with pytest.raises(AppError, match="compression ratio limit"):
+        await WorkspaceService(tmp_path).create_from_archive(
+            UploadFile(file=archive, filename="compression-bomb.zip")
         )
 
     assert list(tmp_path.iterdir()) == []
