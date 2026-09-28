@@ -2394,6 +2394,17 @@
       "VulnerabilityTaskRequest": {
         "additionalProperties": false,
         "properties": {
+          "ground_truth_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ground Truth File"
+          },
           "incremental": {
             "default": false,
             "title": "Incremental",
@@ -2410,7 +2421,8 @@
             "default": "deep",
             "enum": [
               "builtin",
-              "deep"
+              "deep",
+              "comprehensive"
             ],
             "title": "Mode",
             "type": "string"
@@ -2419,6 +2431,22 @@
             "format": "uuid",
             "title": "Project Id",
             "type": "string"
+          },
+          "rule_profile": {
+            "anyOf": [
+              {
+                "enum": [
+                  "default",
+                  "c_cpp",
+                  "web"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule Profile"
           },
           "sanitizer_report": {
             "anyOf": [
@@ -2474,7 +2502,7 @@
             "items": {
               "type": "string"
             },
-            "maxItems": 50,
+            "maxItems": 120,
             "title": "Target Files",
             "type": "array"
           },

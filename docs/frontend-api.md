@@ -58,6 +58,8 @@ HTTP 422 是 FastAPI 标准错误，响应可能是 `{ "detail": [...] }`，不�
 
 `POST /api/v1/projects` 使用 `multipart/form-data`：文件字段名是 `archive`，内容为 ZIP；可选
 文本字段为 `name`。发送 `FormData` 时不要手动设置 `Content-Type`，让浏览器加入 boundary。
+当前解压限制为 ZIP 成员不超过 1,000、总解压数据不超过 50 MB。NaturalCC 验收 manifest 中 Zephyr 与
+RT-Thread 分别有 1,110 和 1,112 个源文件，因此完整 OS 工程不能经此入口导入；小型 fixture 联调不受影响。
 
 `DELETE /api/v1/modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}`
 用于删除断点，成功仍返回该 envelope。`GET /api/v1/tasks/{task_id}/artifacts/{artifact_path}`
@@ -89,21 +91,23 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 | `scan_type` | `frequent_defects` 或 `high_risk`；分别创建漏洞扫描或风险检查任务。 |
 | `scope` | `targets` 或 `project`。使用 `targets` 时必须提供至少一个 `target_files`。 |
 
-可选字段：`source_task_id`（同项目已成功任务的 UUID；见下文）、`mode`（`builtin` 或 `deep`，默认
-`deep`）、`target_files`（相对路径，最多 50 项，默认空列表）、`sanitizer_report`（工作区内的
+可选字段：`source_task_id`（同项目已成功任务的 UUID；见下文）、`mode`（`builtin`、`deep` 或 `comprehensive`，默认
+`deep`）、`target_files`（工作区相对路径，最多 120 项，默认空列表）、`sanitizer_report`（工作区内的
 相对日志路径）、`incremental`（默认 `false`）、`severity_threshold`（`low`/`medium`/`high`/
 `critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–300 秒，默认由
-服务配置决定）。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
+服务配置决定）、`ground_truth_file`（可选，真值文件的工作区相对路径）、`rule_profile`（可选，`default`/`c_cpp`/`web`）。`targets` 范围的文件列表需包含真值引用的全部源文件。`max_findings` 限制 findings 返回列表；NaturalCC 在展示截断前计算 `contract_statistics`，前端保持上限 100 即可。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
 `..`；`scope=project` 可不传 `target_files`。
 
 ```json
 {
   "project_id": "<project-uuid>",
   "scan_type": "frequent_defects",
-  "mode": "deep",
+  "mode": "comprehensive",
   "scope": "targets",
   "target_files": ["src/main.c"],
-  "incremental": true
+  "ground_truth_file": "ground_truth.json",
+  "rule_profile": "c_cpp",
+  "max_findings": 100
 }
 ```
 
@@ -114,8 +118,12 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 `partial` coverage 才能通过；`partial` 明确表示部分覆盖，不代表完整 C/C++ 扫描。分析器不可用或未达到要求时任务会失败，
 coverage 仍可能包含诊断信息。
 
-`scan_type` 当前只选择任务的 `task_type`，不改变扫描结果的分类契约。`result` 不提供目标/额外发现分类、
-TP/FN/FP、检出率、误报率或达标判断；原始 findings 是候选发现，前端不能据此自行推算合同指标。
+扫描结果包含 `findings` / `raw_findings`（NaturalCC 返回的展示列表，受 `max_findings` 截断）、
+`target_findings`、`extra_findings`、coverage、报告和 `contract_statistics`。请求不传 `analyzer`；
+`mode=comprehensive` 由后端映射到上游综合分析。分类按后端的 `contract_category` 与上游 `category` /
+`category_label` 等信息展示；统计由上游在列表截断前计算，后端校验后透传。未传真值或统计状态为
+`not_evaluated` 时，前端只展示候选与 coverage，不得自行推算检出率、准确率、误报率或合同达标结论。
+后端定向测试通过；尚未与真实 NaturalCC/OpenEuler 联调。
 
 若扫描代码生成结果，传 `source_task_id` 为同一项目中状态为 `SUCCEEDED` 的代码生成任务 ID，
 `target_files` 写生成文件相对于该任务 workspace 的路径。后端从该任务 workspace 建立扫描副本，原项目
