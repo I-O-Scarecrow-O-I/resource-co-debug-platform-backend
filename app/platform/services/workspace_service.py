@@ -25,9 +25,9 @@ class WorkspaceService:
     MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
     MULTIPART_OVERHEAD_BYTES = 1 * 1024 * 1024
     MAX_PROJECT_UPLOAD_BODY_BYTES = MAX_ARCHIVE_BYTES + MULTIPART_OVERHEAD_BYTES
-    _MAX_ZIP_MEMBERS = 1_000
-    _MAX_ZIP_FILE_BYTES = 10 * 1024 * 1024
-    _MAX_ZIP_TOTAL_BYTES = 50 * 1024 * 1024
+    _MAX_ZIP_MEMBERS = 5_000
+    _MAX_ZIP_FILE_BYTES = 16 * 1024 * 1024
+    _MAX_ZIP_TOTAL_BYTES = 64 * 1024 * 1024
     _MAX_ZIP_COMPRESSION_RATIO = 100
     _ZIP_CHUNK_BYTES = 64 * 1024
 
@@ -443,4 +443,3 @@ class WorkspaceService:
 
     def _safe_filename(self, filename: str) -> str:
         return "".join("_" if char in '\\/:*?"<>|' else char for char in filename)
-
