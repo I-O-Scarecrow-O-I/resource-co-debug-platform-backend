@@ -58,8 +58,9 @@ HTTP 422 是 FastAPI 标准错误，响应可能是 `{ "detail": [...] }`，不�
 
 `POST /api/v1/projects` 使用 `multipart/form-data`：文件字段名是 `archive`，内容为 ZIP；可选
 文本字段为 `name`。发送 `FormData` 时不要手动设置 `Content-Type`，让浏览器加入 boundary。
-当前解压限制为 ZIP 成员不超过 1,000、总解压数据不超过 50 MB。NaturalCC 验收 manifest 中 Zephyr 与
-RT-Thread 分别有 1,110 和 1,112 个源文件，因此完整 OS 工程不能经此入口导入；小型 fixture 联调不受影响。
+上传限制：ZIP 成员最多 5,000 项（目录也计入），单个解压文件最多 16 MiB，解压总量最多 64 MiB；
+压缩 ZIP 最多 64 MiB，HTTP 请求 body 最多 65 MiB。上限提高不代表 NaturalCC 完整验收工程已验证可导入；
+按要求暂缓实测。
 
 `DELETE /api/v1/modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}`
 用于删除断点，成功仍返回该 envelope。`GET /api/v1/tasks/{task_id}/artifacts/{artifact_path}`
