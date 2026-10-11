@@ -13,8 +13,8 @@
   deferred approval 协议会在任务运行时 fail-closed，不存在 legacy fallback。
 - NaturalCC 的模型凭据只能设置在 NaturalCC 服务环境中，不能写入后端
   `backend.env`、任务 metadata、HTTP 请求或日志。
-- 未配置模型 API key 时，只能验收 NaturalCC 进程、CParser 与不调用模型的插件；不得将
-  code completion 或 Agent 模型功能宣称为已上线。
+- 未配置云端模型 API key 时，云端模型路径只能验收 NaturalCC 进程、CParser 与不调用模型的插件；不得将
+  云端 code completion 或 Agent 模型功能宣称为已上线。本机 Ollama 是可选路径，适配描述不代表已完成平台联调或验收，见[离线部署说明](naturalcc-offline-deployment.md)。
 - `c619262` 的 NaturalCC Agent 管理 API 没有认证；当前部署只适用于可信内网，且仅监听
   loopback。不可信调用方必须先由上游服务认证，或在平台任务沙箱完成身份拆分后，才能开放访问。
 - 任务 API 可执行调用方提供的命令，禁止直接暴露到公网。仅应部署在可信网络内，或置于提供
@@ -211,6 +211,8 @@ sudoedit /etc/naturalcc-agent/naturalcc.env
 读取后传给服务，因此必须保持 `root:root`、`0600`。NaturalCC unit 由 `StateDirectory=naturalcc-agent`
 创建状态目录，并仅额外允许写入后端 workspace 目录。启用服务前验证运行账号可读依赖，并执行真实 CParser
 解析冒烟：
+
+可选 Ollama 环境文件及 provider 选择规则见[集中离线说明](naturalcc-offline-deployment.md)；此路径不修改默认 DeepSeek 示例或现有 unit。
 
 ```bash
 sudo -u naturalcc-agent /usr/bin/test -r \

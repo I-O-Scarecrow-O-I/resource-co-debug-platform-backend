@@ -23,6 +23,8 @@ metadata、日志或文档示例。后端通过 `NATURALCC_BASE_URL`、连接/�
 的后续工具调用逐个重新审批；因此 NaturalCC 允许项目命令且没有 OS 沙箱时，普通主机不得开启
 `NATURALCC_APPROVE_EXECUTE=true`。
 
+可选的 NaturalCC 本地 Ollama 离线路径见[集中部署说明](naturalcc-offline-deployment.md)；它不改变默认 DeepSeek 配置或 `NATURALCC_APPROVE_EXECUTE=false` 的审批边界。
+
 ## 运行与验证
 
 启动后端后先验证：

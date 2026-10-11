@@ -89,7 +89,7 @@ NaturalCC 模型密钥只交给 NaturalCC 进程，不填入后端 `.env`、前�
 
 ### 4.3 NaturalCC 依赖与模型配置
 
-当前已配置的 Python 3.12 环境与 libclang 可以复用。代码生成（Agent）需要可用的模型 API 配置；C/C++ 解析还依赖 `LIBCLANG_PATH`。PowerShell 中对当前进程设置的变量不会自动写入仓库，也不会影响其他进程：
+当前已配置的 Python 3.12 环境与 libclang 可以复用。代码生成（Agent）可使用云端模型 API 配置，或按[集中离线说明](naturalcc-offline-deployment.md)配置本机 Ollama；C/C++ 解析还依赖 `LIBCLANG_PATH`。PowerShell 中对当前进程设置的变量不会自动写入仓库，也不会影响其他进程：
 
 ```powershell
 $env:LIBCLANG_PATH = 'O:\Code_dependency\tools\libclang-18.1.1\clang\native\libclang.dll'
