@@ -30,6 +30,7 @@ class WorkspaceService:
     _MAX_ZIP_TOTAL_BYTES = 64 * 1024 * 1024
     _MAX_ZIP_COMPRESSION_RATIO = 100
     _ZIP_CHUNK_BYTES = 64 * 1024
+    _INCREMENTAL_WORKSPACE_NAME = "incremental_workspace"
 
     def __init__(self, storage_root: Path) -> None:
         self.storage_root = storage_root.resolve()
@@ -142,6 +143,50 @@ class WorkspaceService:
             raise AppError("invalid task workspace path")
         copytree(source_path or project.source_path, workspace)
         return workspace
+
+    def sync_project_incremental_workspace(
+        self,
+        project_id: UUID,
+        source_path: Path,
+    ) -> Path:
+        """Replace a project's stable scan tree with an exact copy of ``source_path``.
+
+        The caller must serialize calls for the same project and keep that lock while
+        the returned workspace is in use.
+        """
+        project = self.require_project(project_id)
+        project_root = project.root_path.resolve()
+        source = source_path.resolve()
+        if not source.is_dir() or not source.is_relative_to(project_root):
+            raise AppError("incremental source must stay inside the project workspace")
+
+        stable = (project_root / self._INCREMENTAL_WORKSPACE_NAME).resolve()
+        if not stable.is_relative_to(project_root):
+            raise AppError("invalid incremental workspace path")
+        staging = (project_root / f".{self._INCREMENTAL_WORKSPACE_NAME}-{uuid4()}").resolve()
+        backup = (project_root / f".{self._INCREMENTAL_WORKSPACE_NAME}-backup-{uuid4()}").resolve()
+        if not staging.is_relative_to(project_root) or not backup.is_relative_to(project_root):
+            raise AppError("invalid incremental workspace path")
+
+        copytree(source, staging)
+        moved_existing = False
+        try:
+            if stable.exists():
+                stable.rename(backup)
+                moved_existing = True
+            staging.rename(stable)
+        except Exception:
+            if staging.exists():
+                rmtree(staging)
+            if moved_existing and backup.exists() and not stable.exists():
+                backup.rename(stable)
+            raise
+        if moved_existing:
+            try:
+                rmtree(backup)
+            except OSError:
+                logger.warning("failed to remove incremental workspace backup %s", backup)
+        return stable
 
     @staticmethod
     def _validate_task_workspace_name(workspace_name: str) -> None:

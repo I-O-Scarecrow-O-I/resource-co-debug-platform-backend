@@ -5,12 +5,16 @@ from app.modules.co_debug.dependency.models import (
     MakefileModel,
     MissingDependency,
 )
+from app.modules.co_debug.dependency.pattern_rule_resolver import PatternRuleResolver
 
 
 class DependencyDetector:
     """
     B4 Makefile 缺失依赖检测器。
     """
+
+    def __init__(self) -> None:
+        self.pattern_rules = PatternRuleResolver()
 
     def detect(
         self,
@@ -33,7 +37,13 @@ class DependencyDetector:
             )
 
             if target not in declared_map:
-                continue
+                resolved = self.pattern_rules.resolve(target, makefile.rules)
+                if resolved is None:
+                    continue
+                declared_map[target] = {
+                    self._normalize_path(item)
+                    for item in resolved.normal_prerequisites
+                }
 
             declared = declared_map[target]
 
@@ -75,7 +85,7 @@ class DependencyDetector:
 
             dependencies = {
                 self._normalize_path(item)
-                for item in rule.prerequisites
+                for item in rule.normal_prerequisites
             }
 
             declared_map.setdefault(

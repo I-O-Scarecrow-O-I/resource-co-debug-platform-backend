@@ -7,6 +7,7 @@ from app.core.errors import AppError
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
 )
+from app.modules.co_debug.debug.session import GdbMiCommandError
 from app.modules.co_debug.schemas.debug import (
     DebugSessionResponse,
     DebugSessionStateResponse,
@@ -396,9 +397,15 @@ class DebugSessionService:
             operation,
         )
 
-        snapshot = await method(
-            task_id
-        )
+        try:
+            snapshot = await method(
+                task_id
+            )
+        except GdbMiCommandError as exc:
+            command_name = operation.replace("_", " ")
+            raise AppError(
+                f"Failed to {command_name} debug target: {exc}"
+            ) from exc
 
         return self._state_response(
             task,
