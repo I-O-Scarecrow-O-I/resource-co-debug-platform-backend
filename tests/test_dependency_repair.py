@@ -429,3 +429,27 @@ def test_missing_makefile_raises_file_not_found(
             makefile_path=makefile,
             missing_dependencies=[],
         )
+
+
+def test_repair_adds_compile_dependency_without_replacing_generated_rule(tmp_path):
+    makefile = tmp_path / "Makefile"
+    generated_rule = "generated/version.h: VERSION scripts/gen_version.sh"
+    makefile.write_text(
+        f"{generated_rule}\n"
+        "\tbash scripts/gen_version.sh $@\n"
+        "build/main.o: src/main.c | build\n"
+    )
+
+    result = DependencyRepair().generate(
+        makefile,
+        [
+            MissingDependency(
+                target="build/main.o",
+                dependency="generated/version.h",
+                source_file="src/main.c",
+            )
+        ],
+    )
+
+    assert result.content.count(generated_rule) == 1
+    assert "build/main.o: generated/version.h" in result.content

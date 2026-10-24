@@ -1,15 +1,28 @@
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
+class DeclaredDependencyDetail(BaseModel):
+    target: str
+    dependency: str
+    dependency_type: Literal["normal", "order_only"]
+    target_kind: str
+    dependency_kind: str
+    generated: bool
+    source: Literal["makefile"] = "makefile"
+
+
 class DependencyAnalysisResponse(BaseModel):
     project_id: UUID
     declared_dependencies: list[str]
+    dependency_details: list[DeclaredDependencyDetail] = Field(default_factory=list)
     actual_dependencies: list[str]
     missing_dependencies: list[str]
     repair_supported: bool
     note: str
+
 
 class DependencyRepairResponse(BaseModel):
     project_id: UUID
@@ -27,6 +40,7 @@ class DependencyRepairResponse(BaseModel):
     repaired_content: str
 
     note: str
+
 
 class DependencyRepairBuildRequest(BaseModel):
     project_id: UUID

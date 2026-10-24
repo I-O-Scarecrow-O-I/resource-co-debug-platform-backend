@@ -1693,6 +1693,54 @@
         "title": "DebugWaitForStopRequest",
         "type": "object"
       },
+      "DeclaredDependencyDetail": {
+        "properties": {
+          "dependency": {
+            "title": "Dependency",
+            "type": "string"
+          },
+          "dependency_kind": {
+            "title": "Dependency Kind",
+            "type": "string"
+          },
+          "dependency_type": {
+            "enum": [
+              "normal",
+              "order_only"
+            ],
+            "title": "Dependency Type",
+            "type": "string"
+          },
+          "generated": {
+            "title": "Generated",
+            "type": "boolean"
+          },
+          "source": {
+            "const": "makefile",
+            "default": "makefile",
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_kind": {
+            "title": "Target Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "dependency",
+          "dependency_type",
+          "target_kind",
+          "dependency_kind",
+          "generated"
+        ],
+        "title": "DeclaredDependencyDetail",
+        "type": "object"
+      },
       "DependencyAnalysisResponse": {
         "properties": {
           "actual_dependencies": {
@@ -1707,6 +1755,13 @@
               "type": "string"
             },
             "title": "Declared Dependencies",
+            "type": "array"
+          },
+          "dependency_details": {
+            "items": {
+              "$ref": "#/components/schemas/DeclaredDependencyDetail"
+            },
+            "title": "Dependency Details",
             "type": "array"
           },
           "missing_dependencies": {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import os
+import stat
 import time
 from pathlib import Path
 from uuid import UUID
@@ -140,17 +140,67 @@ class InteractiveDebugService:
     def _is_debuggable_executable(
         path: Path,
     ) -> bool:
-        if (
-            not path.is_file()
-            or not os.access(path, os.X_OK)
-        ):
+        if not path.is_file():
             return False
 
         try:
             with path.open("rb") as executable:
-                return executable.read(4) == b"\x7fELF"
+                header = executable.read(64)
+                if len(header) < 18 or header[:4] != b"\x7fELF":
+                    return False
+
+                byte_order = {
+                    1: "little",
+                    2: "big",
+                }.get(header[5])
+                if byte_order is None:
+                    return False
+
+                # ZIP extraction intentionally does not trust archived permission
+                # bits, so retained build outputs can lose X_OK. Inspect the ELF
+                # object type instead; ET_REL objects stay excluded.
+                elf_type = int.from_bytes(header[16:18], byteorder=byte_order)
+                if elf_type == 2:  # ET_EXEC
+                    return True
+                if elf_type != 3:  # ET_DYN can be either a PIE or a shared library.
+                    return False
+
+                elf_class = header[4]
+                if elf_class == 1 and len(header) >= 46:  # ELF32
+                    program_offset = int.from_bytes(header[28:32], byteorder=byte_order)
+                    entry_size = int.from_bytes(header[42:44], byteorder=byte_order)
+                    entry_count = int.from_bytes(header[44:46], byteorder=byte_order)
+                elif elf_class == 2 and len(header) >= 58:  # ELF64
+                    program_offset = int.from_bytes(header[32:40], byteorder=byte_order)
+                    entry_size = int.from_bytes(header[54:56], byteorder=byte_order)
+                    entry_count = int.from_bytes(header[56:58], byteorder=byte_order)
+                else:
+                    return False
+
+                if entry_size < 4 or not 0 < entry_count <= 1024:
+                    return False
+                for index in range(entry_count):
+                    executable.seek(program_offset + index * entry_size)
+                    if int.from_bytes(executable.read(4), byteorder=byte_order) == 3:
+                        return True  # PT_INTERP identifies a runnable PIE.
+                return False
         except OSError:
             return False
+
+    @classmethod
+    def _ensure_debuggable_executable(
+        cls,
+        path: Path,
+    ) -> None:
+        if not cls._is_debuggable_executable(path):
+            raise AppError("debug executable is not a runnable ELF file")
+
+        try:
+            current_mode = path.stat().st_mode
+            if not current_mode & stat.S_IXUSR:
+                path.chmod(current_mode | stat.S_IXUSR)
+        except OSError as exc:
+            raise AppError("failed to prepare debug executable permissions") from exc
 
     async def create_task(
         self,
@@ -227,6 +277,10 @@ class InteractiveDebugService:
                     "debug executable does not exist: "
                     f"{request.executable_path}"
                 )
+
+            # This is the DEBUG task's private copy. The retained BUILD artifact
+            # and Project source remain immutable.
+            self._ensure_debuggable_executable(executable)
 
             transport: PlatformGdbTransport | None = None
             session: GdbMiSession | None = None

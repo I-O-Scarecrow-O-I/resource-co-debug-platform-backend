@@ -8,6 +8,7 @@ from app.modules.co_debug.dependency.models import (
     MakeRule,
     ProjectModel,
 )
+from app.modules.co_debug.dependency.pattern_rule_resolver import PatternRuleResolver
 
 _SOURCE_SUFFIXES = {
     ".c",
@@ -30,6 +31,10 @@ _LIBRARY_SUFFIXES = {
 }
 
 
+class DependencyAnalysisError(RuntimeError):
+    """A user-correctable failure while deriving project dependencies."""
+
+
 class DependencyAnalyzer:
     """
     B3 实际依赖分析器。
@@ -42,6 +47,9 @@ class DependencyAnalyzer:
        source -> object
        object/library -> executable
     """
+
+    def __init__(self) -> None:
+        self.pattern_rules = PatternRuleResolver()
 
     def analyze(
         self,
@@ -108,6 +116,7 @@ class DependencyAnalyzer:
             recipe_target = self._find_recipe_target_for_source(
                 merged,
                 analyzed_source,
+                makefile,
             )
 
             if recipe_target is not None:
@@ -298,6 +307,7 @@ class DependencyAnalyzer:
         self,
         merged: dict[str, ActualDependency],
         source_file: str,
+        makefile: MakefileModel | None,
     ) -> str | None:
         normalized_source = self._normalize_path(source_file)
 
@@ -309,6 +319,12 @@ class DependencyAnalyzer:
 
             if normalized_source in normalized_dependencies:
                 return target
+
+        if makefile is not None:
+            return self.pattern_rules.target_for_prerequisite(
+                normalized_source,
+                makefile.rules,
+            )
 
         return None
 
@@ -368,7 +384,7 @@ class DependencyAnalyzer:
         )
 
         if result.returncode != 0:
-            raise RuntimeError(
+            raise DependencyAnalysisError(
                 f"依赖分析失败: {source_file}\n"
                 f"{result.stderr}"
             )
@@ -494,13 +510,13 @@ class DependencyAnalyzer:
             return next(iter(matches))
 
         if matches:
-            raise RuntimeError(
+            raise DependencyAnalysisError(
                 "依赖分析失败: 缺失头文件 "
                 f"{dependency} 匹配多个 Makefile target: "
                 f"{', '.join(sorted(matches))}"
             )
 
-        raise RuntimeError(
+        raise DependencyAnalysisError(
             "依赖分析失败: 缺失头文件 "
             f"{dependency} 无法解析为 Makefile generated target"
         )
@@ -546,13 +562,13 @@ class DependencyAnalyzer:
         rule: MakeRule,
     ) -> str:
         first = (
-            rule.prerequisites[0]
-            if rule.prerequisites
+            rule.normal_prerequisites[0]
+            if rule.normal_prerequisites
             else ""
         )
 
         all_dependencies = " ".join(
-            rule.prerequisites
+            rule.normal_prerequisites
         )
 
         result = recipe
@@ -560,6 +576,7 @@ class DependencyAnalyzer:
         result = result.replace("$<", first)
         result = result.replace("$^", all_dependencies)
         result = result.replace("$+", all_dependencies)
+        result = result.replace("$|", " ".join(rule.order_only_prerequisites))
 
         return result
 

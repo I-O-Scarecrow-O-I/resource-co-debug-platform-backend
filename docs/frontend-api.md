@@ -165,6 +165,11 @@ ThreadSanitizer (TSan) 日志通过可选 `sanitizer_report` 传入。先通过�
 `/modules/co-debug/dependencies/{action}`，调试动作均为
 `/modules/co-debug/debug/sessions/{task_id}/{action}`。
 
+依赖分析响应继续保留兼容字段 `declared_dependencies: string[]`，并提供结构化
+`dependency_details`。前端应优先使用后者区分 `normal` 与 `order_only`，并通过
+`target_kind`/`generated` 展示 `generated_header`、`generated_source` 等生成目标；
+不得从兼容字符串反向猜测这些语义。
+
 ## `zhiyan-frontend` 接入点（说明，不在本仓库修改）
 
 | 文件 | 需要接入的调用要点 |

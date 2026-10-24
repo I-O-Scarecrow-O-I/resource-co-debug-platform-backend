@@ -27,9 +27,20 @@ class ProjectModel:
 @dataclass(slots=True)
 class MakeRule:
     target: str
-    prerequisites: list[str] = field(default_factory=list)
+    normal_prerequisites: list[str] = field(default_factory=list)
+    order_only_prerequisites: list[str] = field(default_factory=list)
     recipes: list[str] = field(default_factory=list)
     line_number: int = 0
+
+    @property
+    def prerequisites(self) -> list[str]:
+        """Compatibility view for code that needs every prerequisite."""
+        return [*self.normal_prerequisites, *self.order_only_prerequisites]
+
+    @prerequisites.setter
+    def prerequisites(self, values: list[str]) -> None:
+        self.normal_prerequisites = values
+        self.order_only_prerequisites = []
 
 @dataclass(slots=True)
 class MakefileModel:

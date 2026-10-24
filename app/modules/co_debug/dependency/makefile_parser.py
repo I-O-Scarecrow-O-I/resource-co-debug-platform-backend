@@ -1,15 +1,9 @@
 import re
 from pathlib import Path
 
-from app.modules.co_debug.dependency.models import (
-    MakefileModel,
-    MakeRule,
-)
+from app.modules.co_debug.dependency.models import MakefileModel, MakeRule
 
-
-_VARIABLE_RE = re.compile(
-    r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?::=|\?=|\+=|=)\s*(.*)$"
-)
+_VARIABLE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(:=|\?=|\+=|=)\s*(.*)$")
 
 _VARIABLE_REF_RE = re.compile(r"\$\(([^()]+)\)|\${([^{}]+)}")
 
@@ -86,13 +80,16 @@ class MakefileParser:
             variable_match = _VARIABLE_RE.match(stripped)
             if variable_match:
                 name = variable_match.group(1)
-                value = variable_match.group(2).strip()
+                operator = variable_match.group(2)
+                value = variable_match.group(3).strip()
 
-                # += 做一个最简单的兼容
-                if "+=" in stripped and name in variables:
-                    variables[name] = (
-                        variables[name] + " " + value
-                    ).strip()
+                if operator == "?=" and name in variables:
+                    line_index += 1
+                    continue
+                if operator == "+=" and name in variables:
+                    variables[name] = (variables[name] + " " + value).strip()
+                elif operator == ":=":
+                    variables[name] = self._expand(value, variables)
                 else:
                     variables[name] = value
 
@@ -121,16 +118,18 @@ class MakefileParser:
                 line_index += 1
                 continue
 
-            prerequisites = [
-                item
-                for item in prerequisite_part.split()
-                if item and item != "|"
-            ]
+            prerequisite_tokens = prerequisite_part.split()
+            separator = prerequisite_tokens.index("|") if "|" in prerequisite_tokens else None
+            normal_prerequisites = prerequisite_tokens[:separator]
+            order_only_prerequisites = (
+                prerequisite_tokens[separator + 1 :] if separator is not None else []
+            )
 
             for target in targets:
                 rule = MakeRule(
                     target=target,
-                    prerequisites=list(prerequisites),
+                    normal_prerequisites=list(normal_prerequisites),
+                    order_only_prerequisites=list(order_only_prerequisites),
                     line_number=line_number,
                 )
                 rules.append(rule)
@@ -143,12 +142,12 @@ class MakefileParser:
         for rule in rules:
             rule.target = self._expand(rule.target, variables)
 
-            expanded_dependencies: list[str] = []
-            for prerequisite in rule.prerequisites:
-                expanded = self._expand(prerequisite, variables)
-                expanded_dependencies.extend(expanded.split())
-
-            rule.prerequisites = expanded_dependencies
+            rule.normal_prerequisites = self._expand_prerequisites(
+                rule.normal_prerequisites, variables
+            )
+            rule.order_only_prerequisites = self._expand_prerequisites(
+                rule.order_only_prerequisites, variables
+            )
 
             rule.recipes = [
                 self._expand(recipe, variables)
@@ -177,11 +176,7 @@ class MakefileParser:
 
                 name = match.group(1) or match.group(2)
 
-                # 暂不实现 $(SRC:.cpp=.o) 这类 GNU Make substitution ref。
-                if ":" in name:
-                    return match.group(0)
-
-                replacement = variables.get(name)
+                replacement = self._resolve_reference(name, variables)
                 if replacement is None:
                     return match.group(0)
 
@@ -196,3 +191,31 @@ class MakefileParser:
                 break
 
         return result
+
+    def _resolve_reference(self, reference: str, variables: dict[str, str]) -> str | None:
+        name, separator, substitution = reference.partition(":")
+        replacement = variables.get(name)
+        if replacement is None:
+            return None
+        if not separator:
+            return replacement
+
+        source_suffix, equals, target_suffix = substitution.partition("=")
+        if not equals or not source_suffix:
+            return None
+        return " ".join(
+            word[: -len(source_suffix)] + target_suffix
+            if word.endswith(source_suffix)
+            else word
+            for word in replacement.split()
+        )
+
+    def _expand_prerequisites(
+        self,
+        prerequisites: list[str],
+        variables: dict[str, str],
+    ) -> list[str]:
+        expanded_dependencies: list[str] = []
+        for prerequisite in prerequisites:
+            expanded_dependencies.extend(self._expand(prerequisite, variables).split())
+        return expanded_dependencies

@@ -1,6 +1,8 @@
 from uuid import UUID
 
+from app.core.errors import AppError
 from app.modules.co_debug.dependency.dependency_analyzer import (
+    DependencyAnalysisError,
     DependencyAnalyzer,
 )
 from app.modules.co_debug.dependency.dependency_detector import (
@@ -14,6 +16,7 @@ from app.modules.co_debug.dependency.makefile_parser import (
 )
 from app.modules.co_debug.dependency.models import (
     ActualDependency,
+    MakefileModel,
     MakeRule,
     MissingDependency,
     ProjectModel,
@@ -22,6 +25,7 @@ from app.modules.co_debug.dependency.project_parser import (
     ProjectParser,
 )
 from app.modules.co_debug.schemas.dependencies import (
+    DeclaredDependencyDetail,
     DependencyAnalysisResponse,
     DependencyRepairResponse,
 )
@@ -51,7 +55,10 @@ class DependencyAnalysisService:
         B1-B4：只分析，不修改工程。
         """
 
-        result = self._analyze_project(project_id)
+        try:
+            result = self._analyze_project(project_id)
+        except DependencyAnalysisError as exc:
+            raise AppError(str(exc)) from exc
 
         if result is None:
             return DependencyAnalysisResponse(
@@ -80,6 +87,7 @@ class DependencyAnalysisService:
                     makefile_model.rules
                 )
             ),
+            dependency_details=self._dependency_details(makefile_model),
             actual_dependencies=(
                 self._format_actual_dependencies(
                     actual_dependencies
@@ -112,7 +120,10 @@ class DependencyAnalysisService:
             project_id
         )
 
-        result = self._analyze_project(project_id)
+        try:
+            result = self._analyze_project(project_id)
+        except DependencyAnalysisError as exc:
+            raise AppError(str(exc)) from exc
 
         if result is None:
             raise ValueError(
@@ -257,12 +268,72 @@ class DependencyAnalysisService:
         result = []
 
         for rule in rules:
-            for prerequisite in rule.prerequisites:
+            for prerequisite in rule.normal_prerequisites:
                 result.append(
                     f"{rule.target} -> {prerequisite}"
                 )
+            for prerequisite in rule.order_only_prerequisites:
+                result.append(f"{rule.target} -[order-only]-> {prerequisite}")
 
         return result
+
+    @classmethod
+    def _dependency_details(
+        cls,
+        makefile: MakefileModel,
+    ) -> list[DeclaredDependencyDetail]:
+        details: list[DeclaredDependencyDetail] = []
+        root = makefile.makefile_path.parent
+
+        for rule in makefile.rules:
+            target_kind, generated = cls._target_kind(rule, root)
+            for dependency_type, prerequisites in (
+                ("normal", rule.normal_prerequisites),
+                ("order_only", rule.order_only_prerequisites),
+            ):
+                for dependency in prerequisites:
+                    details.append(
+                        DeclaredDependencyDetail(
+                            target=rule.target,
+                            dependency=dependency,
+                            dependency_type=dependency_type,
+                            target_kind=target_kind,
+                            dependency_kind=cls._path_kind(dependency),
+                            generated=generated,
+                        )
+                    )
+        return details
+
+    @classmethod
+    def _target_kind(cls, rule: MakeRule, root) -> tuple[str, bool]:
+        kind = cls._path_kind(rule.target)
+        if kind == "header" and rule.recipes:
+            return "generated_header", True
+        if kind == "source" and rule.recipes:
+            return "generated_source", True
+        if kind in {"object", "library"}:
+            return kind, False
+        generated = (
+            bool(rule.recipes)
+            and "%" not in rule.target
+            and not (root / rule.target).exists()
+        )
+        return ("generated_other" if generated else kind), generated
+
+    @staticmethod
+    def _path_kind(value: str) -> str:
+        from pathlib import PurePosixPath
+
+        suffix = PurePosixPath(value).suffix.lower()
+        if suffix in {".h", ".hh", ".hpp"}:
+            return "header"
+        if suffix in {".c", ".cc", ".cpp", ".cxx"}:
+            return "source"
+        if suffix in {".o", ".obj", ".lo"}:
+            return "object"
+        if suffix in {".a", ".so", ".dylib"}:
+            return "library"
+        return "other"
 
     @staticmethod
     def _format_actual_dependencies(

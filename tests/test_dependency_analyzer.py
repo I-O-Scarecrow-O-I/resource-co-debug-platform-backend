@@ -189,3 +189,30 @@ def test_missing_header_without_makefile_target_remains_an_analysis_error(tmp_pa
 
     with pytest.raises(RuntimeError, match="无法解析为 Makefile generated target"):
         DependencyAnalyzer().analyze(project, makefile_model)
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc is required")
+def test_pattern_rule_maps_compiler_dependencies_to_instantiated_target(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "include").mkdir()
+    (tmp_path / "src" / "main.c").write_text(
+        '#include "app.h"\nint main(void) { return APP_VALUE; }\n'
+    )
+    (tmp_path / "include" / "app.h").write_text("#define APP_VALUE 0\n")
+    makefile = tmp_path / "Makefile"
+    makefile.write_text(
+        "build/%.o: src/%.c | build\n"
+        "\tgcc -Iinclude -c $< -o $@\n"
+    )
+
+    project = ProjectParser().parse(tmp_path)
+    model = MakefileParser().parse(makefile)
+    actual = DependencyAnalyzer().analyze(project, model)
+    actual_map = {item.target: item.dependencies for item in actual}
+
+    assert "src/main.c" in actual_map["build/main.o"]
+    assert "include/app.h" in actual_map["build/main.o"]
+    missing = DependencyDetector().detect(model, actual)
+    assert [(item.target, item.dependency) for item in missing] == [
+        ("build/main.o", "include/app.h")
+    ]
