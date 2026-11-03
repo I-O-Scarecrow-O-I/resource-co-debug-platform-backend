@@ -429,6 +429,7 @@ class CodeGenerationTaskService:
                     severity_threshold="medium",
                     max_findings=30,
                     timeout_seconds=scan_remaining,
+                    analysis_timeout_seconds=scan_remaining,
                     on_event=lambda kind: context.log(
                         f"Pipeline self scan event: {kind}", stream="code_generation.adapter"
                     ),
