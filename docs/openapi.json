@@ -106,6 +106,76 @@
         "title": "ApiResponse[DebugComparisonAggregateResponse]",
         "type": "object"
       },
+      "ApiResponse_DebugCoordinationGroupResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugCoordinationGroupResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugCoordinationGroupResponse]",
+        "type": "object"
+      },
+      "ApiResponse_DebugCoordinationRuleResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugCoordinationRuleResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugCoordinationRuleResponse]",
+        "type": "object"
+      },
       "ApiResponse_DebugExpressionResponse_": {
         "properties": {
           "data": {
@@ -139,6 +209,41 @@
           "timestamp"
         ],
         "title": "ApiResponse[DebugExpressionResponse]",
+        "type": "object"
+      },
+      "ApiResponse_DebugGroupCommandResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugGroupCommandResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugGroupCommandResponse]",
         "type": "object"
       },
       "ApiResponse_DebugSessionResponse_": {
@@ -674,6 +779,123 @@
           "timestamp"
         ],
         "title": "ApiResponse[list[DebugBuildCandidate]]",
+        "type": "object"
+      },
+      "ApiResponse_list_DebugCoordinationEventResponse__": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DebugCoordinationEventResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[list[DebugCoordinationEventResponse]]",
+        "type": "object"
+      },
+      "ApiResponse_list_DebugCoordinationGroupResponse__": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DebugCoordinationGroupResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[list[DebugCoordinationGroupResponse]]",
+        "type": "object"
+      },
+      "ApiResponse_list_DebugCoordinationRuleResponse__": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DebugCoordinationRuleResponse"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[list[DebugCoordinationRuleResponse]]",
         "type": "object"
       },
       "ApiResponse_list_LogEvent__": {
@@ -1411,6 +1633,290 @@
         "title": "DebugComparisonSummaryRequest",
         "type": "object"
       },
+      "DebugCoordinationEventOutcome": {
+        "enum": [
+          "PROCESSING",
+          "INTERRUPT_CONFIRMED",
+          "INTERRUPT_SENT",
+          "SKIPPED",
+          "FAILED"
+        ],
+        "title": "DebugCoordinationEventOutcome",
+        "type": "string"
+      },
+      "DebugCoordinationEventResponse": {
+        "properties": {
+          "breakpoint_number": {
+            "title": "Breakpoint Number",
+            "type": "string"
+          },
+          "command_sent": {
+            "title": "Command Sent",
+            "type": "boolean"
+          },
+          "event_id": {
+            "format": "uuid",
+            "title": "Event Id",
+            "type": "string"
+          },
+          "group_id": {
+            "format": "uuid",
+            "title": "Group Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/DebugCoordinationEventOutcome"
+          },
+          "processed_at": {
+            "format": "date-time",
+            "title": "Processed At",
+            "type": "string"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "source_event_id": {
+            "format": "uuid",
+            "title": "Source Event Id",
+            "type": "string"
+          },
+          "source_partition_id": {
+            "format": "uuid",
+            "title": "Source Partition Id",
+            "type": "string"
+          },
+          "source_session_task_id": {
+            "format": "uuid",
+            "title": "Source Session Task Id",
+            "type": "string"
+          },
+          "target_partition_id": {
+            "format": "uuid",
+            "title": "Target Partition Id",
+            "type": "string"
+          },
+          "target_paused": {
+            "title": "Target Paused",
+            "type": "boolean"
+          },
+          "target_session_task_id": {
+            "format": "uuid",
+            "title": "Target Session Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "source_event_id",
+          "group_id",
+          "rule_id",
+          "source_partition_id",
+          "source_session_task_id",
+          "target_partition_id",
+          "target_session_task_id",
+          "breakpoint_number",
+          "occurred_at",
+          "processed_at",
+          "outcome",
+          "command_sent",
+          "target_paused",
+          "message"
+        ],
+        "title": "DebugCoordinationEventResponse",
+        "type": "object"
+      },
+      "DebugCoordinationGroupRequest": {
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/DebugLogicalPartitionRequest"
+            },
+            "minItems": 2,
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "name",
+          "members"
+        ],
+        "title": "DebugCoordinationGroupRequest",
+        "type": "object"
+      },
+      "DebugCoordinationGroupResponse": {
+        "properties": {
+          "active_member_count": {
+            "title": "Active Member Count",
+            "type": "integer"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "group_id": {
+            "format": "uuid",
+            "title": "Group Id",
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/DebugLogicalPartitionResponse"
+            },
+            "title": "Members",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DebugCoordinationGroupStatus"
+          }
+        },
+        "required": [
+          "group_id",
+          "project_id",
+          "name",
+          "status",
+          "created_at",
+          "closed_at",
+          "active_member_count",
+          "members"
+        ],
+        "title": "DebugCoordinationGroupResponse",
+        "type": "object"
+      },
+      "DebugCoordinationGroupStatus": {
+        "enum": [
+          "ACTIVE",
+          "DEGRADED",
+          "CLOSED"
+        ],
+        "title": "DebugCoordinationGroupStatus",
+        "type": "string"
+      },
+      "DebugCoordinationRuleAction": {
+        "enum": [
+          "interrupt"
+        ],
+        "title": "DebugCoordinationRuleAction",
+        "type": "string"
+      },
+      "DebugCoordinationRuleRequest": {
+        "properties": {
+          "source_breakpoint_number": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Source Breakpoint Number",
+            "type": "string"
+          },
+          "source_partition_id": {
+            "format": "uuid",
+            "title": "Source Partition Id",
+            "type": "string"
+          },
+          "target_partition_id": {
+            "format": "uuid",
+            "title": "Target Partition Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_partition_id",
+          "source_breakpoint_number",
+          "target_partition_id"
+        ],
+        "title": "DebugCoordinationRuleRequest",
+        "type": "object"
+      },
+      "DebugCoordinationRuleResponse": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/DebugCoordinationRuleAction"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "group_id": {
+            "format": "uuid",
+            "title": "Group Id",
+            "type": "string"
+          },
+          "rule_id": {
+            "format": "uuid",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "source_breakpoint_number": {
+            "title": "Source Breakpoint Number",
+            "type": "string"
+          },
+          "source_partition_id": {
+            "format": "uuid",
+            "title": "Source Partition Id",
+            "type": "string"
+          },
+          "target_partition_id": {
+            "format": "uuid",
+            "title": "Target Partition Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule_id",
+          "group_id",
+          "source_partition_id",
+          "source_breakpoint_number",
+          "target_partition_id",
+          "action",
+          "created_at"
+        ],
+        "title": "DebugCoordinationRuleResponse",
+        "type": "object"
+      },
       "DebugExecutableCandidate": {
         "properties": {
           "executable_path": {
@@ -1458,6 +1964,197 @@
           }
         },
         "title": "DebugExpressionResponse",
+        "type": "object"
+      },
+      "DebugGroupCommand": {
+        "enum": [
+          "run",
+          "continue",
+          "interrupt",
+          "close_sessions"
+        ],
+        "title": "DebugGroupCommand",
+        "type": "string"
+      },
+      "DebugGroupCommandOutcome": {
+        "enum": [
+          "SUCCEEDED",
+          "FAILED",
+          "SKIPPED"
+        ],
+        "title": "DebugGroupCommandOutcome",
+        "type": "string"
+      },
+      "DebugGroupCommandResponse": {
+        "properties": {
+          "all_succeeded": {
+            "title": "All Succeeded",
+            "type": "boolean"
+          },
+          "command": {
+            "$ref": "#/components/schemas/DebugGroupCommand"
+          },
+          "group_id": {
+            "format": "uuid",
+            "title": "Group Id",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/DebugGroupMemberCommandResult"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "group_id",
+          "command",
+          "all_succeeded",
+          "results"
+        ],
+        "title": "DebugGroupCommandResponse",
+        "type": "object"
+      },
+      "DebugGroupMemberCommandResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/DebugGroupCommandOutcome"
+          },
+          "partition_id": {
+            "format": "uuid",
+            "title": "Partition Id",
+            "type": "string"
+          },
+          "partition_name": {
+            "title": "Partition Name",
+            "type": "string"
+          },
+          "session_task_id": {
+            "format": "uuid",
+            "title": "Session Task Id",
+            "type": "string"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugSessionStateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "partition_id",
+          "partition_name",
+          "session_task_id",
+          "outcome"
+        ],
+        "title": "DebugGroupMemberCommandResult",
+        "type": "object"
+      },
+      "DebugLogicalPartitionRequest": {
+        "properties": {
+          "partition_name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Partition Name",
+            "type": "string"
+          },
+          "session_task_id": {
+            "format": "uuid",
+            "title": "Session Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "partition_name",
+          "session_task_id"
+        ],
+        "title": "DebugLogicalPartitionRequest",
+        "type": "object"
+      },
+      "DebugLogicalPartitionResponse": {
+        "properties": {
+          "associated": {
+            "title": "Associated",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "joined_at": {
+            "format": "date-time",
+            "title": "Joined At",
+            "type": "string"
+          },
+          "partition_id": {
+            "format": "uuid",
+            "title": "Partition Id",
+            "type": "string"
+          },
+          "partition_name": {
+            "title": "Partition Name",
+            "type": "string"
+          },
+          "removed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed At"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugSessionStateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_task_id": {
+            "format": "uuid",
+            "title": "Session Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "partition_id",
+          "partition_name",
+          "session_task_id",
+          "associated",
+          "joined_at",
+          "removed_at"
+        ],
+        "title": "DebugLogicalPartitionResponse",
         "type": "object"
       },
       "DebugSessionResponse": {
@@ -2564,7 +3261,7 @@
           "timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 300.0,
+                "maximum": 1000.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -2800,6 +3497,931 @@
           }
         },
         "summary": "Create Debug Comparison",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups": {
+      "get": {
+        "operationId": "list_debug_coordination_groups_api_v1_modules_co_debug_debug_groups_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_list_DebugCoordinationGroupResponse__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Debug Coordination Groups",
+        "tags": [
+          "co_debug"
+        ]
+      },
+      "post": {
+        "operationId": "create_debug_coordination_group_api_v1_modules_co_debug_debug_groups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugCoordinationGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationGroupResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}": {
+      "get": {
+        "operationId": "get_debug_coordination_group_api_v1_modules_co_debug_debug_groups__group_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationGroupResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/close": {
+      "post": {
+        "operationId": "close_debug_coordination_group_api_v1_modules_co_debug_debug_groups__group_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationGroupResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/close-sessions": {
+      "post": {
+        "operationId": "close_debug_coordination_group_sessions_api_v1_modules_co_debug_debug_groups__group_id__close_sessions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugGroupCommandResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close Debug Coordination Group Sessions",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/continue": {
+      "post": {
+        "operationId": "continue_debug_coordination_group_api_v1_modules_co_debug_debug_groups__group_id__continue_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugGroupCommandResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Continue Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/events": {
+      "get": {
+        "operationId": "list_debug_coordination_events_api_v1_modules_co_debug_debug_groups__group_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_list_DebugCoordinationEventResponse__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Debug Coordination Events",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/interrupt": {
+      "post": {
+        "operationId": "interrupt_debug_coordination_group_api_v1_modules_co_debug_debug_groups__group_id__interrupt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugGroupCommandResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Interrupt Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/members/{partition_id}": {
+      "delete": {
+        "operationId": "remove_debug_coordination_member_api_v1_modules_co_debug_debug_groups__group_id__members__partition_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "partition_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Partition Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationGroupResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Debug Coordination Member",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/rules": {
+      "get": {
+        "operationId": "list_debug_coordination_rules_api_v1_modules_co_debug_debug_groups__group_id__rules_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_list_DebugCoordinationRuleResponse__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Debug Coordination Rules",
+        "tags": [
+          "co_debug"
+        ]
+      },
+      "post": {
+        "operationId": "create_debug_coordination_rule_api_v1_modules_co_debug_debug_groups__group_id__rules_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugCoordinationRuleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationRuleResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Debug Coordination Rule",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/rules/{rule_id}": {
+      "delete": {
+        "operationId": "delete_debug_coordination_rule_api_v1_modules_co_debug_debug_groups__group_id__rules__rule_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "rule_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Rule Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_bool_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Debug Coordination Rule",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/run": {
+      "post": {
+        "operationId": "run_debug_coordination_group_api_v1_modules_co_debug_debug_groups__group_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugGroupCommandResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Debug Coordination Group",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/groups/{group_id}/state": {
+      "get": {
+        "operationId": "get_debug_coordination_group_state_api_v1_modules_co_debug_debug_groups__group_id__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugCoordinationGroupResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Debug Coordination Group State",
         "tags": [
           "co_debug"
         ]

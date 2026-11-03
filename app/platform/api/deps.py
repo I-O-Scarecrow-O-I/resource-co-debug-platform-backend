@@ -7,11 +7,18 @@ from fastapi import Depends
 
 from app.core.config import Settings
 from app.core.config import get_settings as load_settings
+from app.modules.co_debug.debug.events import DebugSessionEventBus
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
 )
 from app.modules.co_debug.services.debug_comparison_summary_service import (
     DebugComparisonSummaryService,
+)
+from app.modules.co_debug.services.debug_coordination_service import (
+    DebugCoordinationService,
+)
+from app.modules.co_debug.services.debug_coordination_store import (
+    DebugCoordinationStore,
 )
 from app.modules.co_debug.services.debug_service import DebugSessionService
 from app.modules.co_debug.services.dependency_service import DependencyAnalysisService
@@ -171,6 +178,12 @@ def clear_task_store_cache(*, close: bool = True) -> None:
     if close:
         _ensure_task_services_can_close("task store")
     clear_task_service_cache()
+    if get_debug_coordination_service.cache_info().currsize:
+        get_debug_coordination_service().close()
+    get_debug_coordination_service.cache_clear()
+    if get_debug_coordination_store.cache_info().currsize:
+        get_debug_coordination_store().close()
+    get_debug_coordination_store.cache_clear()
     get_debug_service.cache_clear()
     if close and get_task_store.cache_info().currsize:
         get_task_store().close()
@@ -189,6 +202,11 @@ def get_debug_session_manager(
 
 
 @lru_cache
+def get_debug_session_event_bus() -> DebugSessionEventBus:
+    return DebugSessionEventBus()
+
+
+@lru_cache
 def get_interactive_debug_service(
 ) -> InteractiveDebugService:
     return InteractiveDebugService(
@@ -196,6 +214,7 @@ def get_interactive_debug_service(
         session_manager=(
             get_debug_session_manager()
         ),
+        event_publisher=get_debug_session_event_bus(),
     )
 
 
@@ -210,6 +229,22 @@ def get_debug_service(
         interactive_service=(
             get_interactive_debug_service()
         ),
+    )
+
+
+@lru_cache
+def get_debug_coordination_store() -> DebugCoordinationStore:
+    return DebugCoordinationStore(database_path=get_settings().task_database_path)
+
+
+@lru_cache
+def get_debug_coordination_service() -> DebugCoordinationService:
+    return DebugCoordinationService(
+        store=get_debug_coordination_store(),
+        task_store=get_task_store(),
+        session_manager=get_debug_session_manager(),
+        debug_service=get_debug_service(),
+        event_bus=get_debug_session_event_bus(),
     )
 
 def get_dependency_repair_build_service(

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from app.core.errors import AppError
 from app.modules.co_debug.debug.broker import DebugCommandBroker
+from app.modules.co_debug.debug.events import DebugSessionEventPublisher
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
     GdbMiCommandDispatcher,
@@ -52,9 +53,11 @@ class InteractiveDebugService:
         *,
         task_service: TaskService,
         session_manager: DebugSessionManager,
+        event_publisher: DebugSessionEventPublisher | None = None,
     ) -> None:
         self.task_service = task_service
         self.session_manager = session_manager
+        self.event_publisher = event_publisher
         self.dispatcher = GdbMiCommandDispatcher()
 
 
@@ -310,6 +313,8 @@ class InteractiveDebugService:
                     command_timeout_seconds=(
                         context.timeout_seconds
                     ),
+                    session_task_id=context.task_id,
+                    event_publisher=self.event_publisher,
                 )
 
                 await session.start(
@@ -317,6 +322,7 @@ class InteractiveDebugService:
                         context.timeout_seconds
                     )
                 )
+                await session.enable_async_execution()
 
                 # 只有真正收到 (gdb) prompt 后，
                 # 才向API侧暴露这个Session。

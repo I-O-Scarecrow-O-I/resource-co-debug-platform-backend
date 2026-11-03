@@ -95,7 +95,7 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 可选字段：`source_task_id`（同项目已成功任务的 UUID；见下文）、`mode`（`builtin`、`deep` 或 `comprehensive`，默认
 `deep`）、`target_files`（工作区相对路径，最多 120 项，默认空列表）、`sanitizer_report`（工作区内的
 相对日志路径）、`incremental`（默认 `false`）、`severity_threshold`（`low`/`medium`/`high`/
-`critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–300 秒，默认由
+`critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–1000 秒，默认由
 服务配置决定）、`ground_truth_file`（可选，真值文件的工作区相对路径）、`rule_profile`（可选，`default`/`c_cpp`/`web`）。`targets` 范围的文件列表需包含真值引用的全部源文件。`max_findings` 限制 findings 返回列表；NaturalCC 在展示截断前计算 `contract_statistics`，前端保持上限 100 即可。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
 `..`；`scope=project` 可不传 `target_files`。
 

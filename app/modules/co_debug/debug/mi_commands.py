@@ -191,6 +191,14 @@ class MiCommandBuilder:
             "-exec-interrupt"
         )
 
+    def gdb_set_mi_async(
+        self,
+    ) -> MiCommand:
+        return self._build(
+            "-gdb-set",
+            ["mi-async", "on"],
+        )
+
     def stack_list_frames(
         self,
     ) -> MiCommand:

@@ -162,6 +162,10 @@ def test_execution_commands():
         builder.exec_interrupt()
     )
 
+    async_mode = (
+        builder.gdb_set_mi_async()
+    )
+
     exit_command = (
         builder.gdb_exit()
     )
@@ -199,7 +203,12 @@ def test_execution_commands():
 
     assert (
         exit_command.text
-        == "7-gdb-exit"
+        == "8-gdb-exit"
+    )
+
+    assert (
+        async_mode.text
+        == "7-gdb-set mi-async on"
     )
 
 

@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
+from uuid import UUID, uuid4
 
+from app.core.time import utc_now
+from app.modules.co_debug.debug.events import (
+    DebugSessionEvent,
+    DebugSessionEventKind,
+    DebugSessionEventPublisher,
+)
 from app.modules.co_debug.debug.mi_commands import (
     MiCommandBuilder,
 )
@@ -22,6 +30,8 @@ from app.modules.co_debug.debug.transport import (
     GdbTransport,
     GdbTransportClosed,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class GdbMiError(RuntimeError):
@@ -102,6 +112,8 @@ class GdbMiSession:
         transport: GdbTransport,
         *,
         command_timeout_seconds: float = 10.0,
+        session_task_id: UUID | None = None,
+        event_publisher: DebugSessionEventPublisher | None = None,
     ) -> None:
         if command_timeout_seconds <= 0:
             raise ValueError(
@@ -109,11 +121,16 @@ class GdbMiSession:
                 "must be greater than 0"
             )
 
+        if event_publisher is not None and session_task_id is None:
+            raise ValueError("session_task_id is required when event_publisher is configured")
+
         self.transport = transport
 
         self.command_timeout_seconds = (
             command_timeout_seconds
         )
+        self.session_task_id = session_task_id
+        self.event_publisher = event_publisher
 
         self.command_builder = (
             MiCommandBuilder()
@@ -295,6 +312,16 @@ class GdbMiSession:
             allowed_classes={
                 "done",
             },
+        )
+
+    async def enable_async_execution(self) -> None:
+        """Allow MI control commands while the inferior is running."""
+        command = self.command_builder.gdb_set_mi_async()
+        record = await self._execute(command)
+        self._require_success(
+            command,
+            record,
+            allowed_classes={"done"},
         )
 
     async def insert_breakpoint(
@@ -1083,6 +1110,29 @@ class GdbMiSession:
             self._set_state(
                 DebugSessionState.STOPPED
             )
+
+        if reason == "breakpoint-hit" and self.session_task_id is not None:
+            breakpoint_number = payload.get("bkptno")
+            if isinstance(breakpoint_number, str) and breakpoint_number:
+                self._publish_event(
+                    DebugSessionEvent(
+                        event_id=uuid4(),
+                        session_task_id=self.session_task_id,
+                        kind=DebugSessionEventKind.BREAKPOINT_HIT,
+                        occurred_at=utc_now(),
+                        breakpoint_number=breakpoint_number,
+                    )
+                )
+
+    def _publish_event(self, event: DebugSessionEvent) -> None:
+        publisher = self.event_publisher
+        if publisher is None:
+            return
+        try:
+            publisher.publish(event)
+        except Exception:
+            # Debug event delivery is optional and must never break the MI reader.
+            logger.exception("failed to publish GDB/MI debug event")
 
     def _set_state(
         self,

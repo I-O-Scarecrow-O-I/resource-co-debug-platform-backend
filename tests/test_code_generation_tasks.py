@@ -515,6 +515,7 @@ def test_self_scan_includes_existing_changed_source_files(code_generation_api) -
     assert task["result"]["self_scan"]["status"] == "completed"
     assert requests[0]["target_files"] == ["src/main.py", "src/generated.c"]
     assert requests[0]["feature_config"]["analyzer"] == "cppcheck"
+    assert 0 < requests[0]["feature_config"]["analysis_timeout_seconds"] <= 300
 
 
 @pytest.mark.parametrize("changed_file", ["../outside.c", "C:/outside.c", "missing.c"])

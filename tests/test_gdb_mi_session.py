@@ -1,7 +1,12 @@
 import asyncio
+from uuid import uuid4
 
 import pytest
 
+from app.modules.co_debug.debug.events import (
+    DebugSessionEventBus,
+    DebugSessionEventKind,
+)
 from app.modules.co_debug.debug.models import (
     DebugSessionState,
 )
@@ -214,6 +219,42 @@ async def test_session_waits_for_initial_prompt():
     )
 
     await session.close()
+
+
+@pytest.mark.asyncio
+async def test_breakpoint_hit_publishes_optional_non_blocking_event():
+    transport = FakeGdbTransport()
+    event_bus = DebugSessionEventBus()
+    events = []
+    subscription_id = event_bus.subscribe(asyncio.get_running_loop(), events.append)
+    task_id = uuid4()
+    session = GdbMiSession(
+        transport,
+        command_timeout_seconds=1,
+        session_task_id=task_id,
+        event_publisher=event_bus,
+    )
+    transport.emit("(gdb)")
+    await session.start()
+
+    try:
+        transport.emit(
+            '*stopped,reason="breakpoint-hit",bkptno="7",'
+            'frame={file="main.c",line="9"}'
+        )
+        await _wait_until(lambda: len(events) == 1)
+
+        event = events[0]
+        assert event.session_task_id == task_id
+        assert event.kind == DebugSessionEventKind.BREAKPOINT_HIT
+        assert event.breakpoint_number == "7"
+
+        transport.emit('*stopped,reason="signal-received",signal-name="SIGINT"')
+        await asyncio.sleep(0.01)
+        assert len(events) == 1
+    finally:
+        event_bus.unsubscribe(subscription_id)
+        await session.close()
 
 
 @pytest.mark.asyncio
