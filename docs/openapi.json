@@ -246,6 +246,41 @@
         "title": "ApiResponse[DebugGroupCommandResponse]",
         "type": "object"
       },
+      "ApiResponse_DebugLocalVariablesResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugLocalVariablesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugLocalVariablesResponse]",
+        "type": "object"
+      },
       "ApiResponse_DebugSessionResponse_": {
         "properties": {
           "data": {
@@ -349,6 +384,41 @@
           "timestamp"
         ],
         "title": "ApiResponse[DebugStackFramesResponse]",
+        "type": "object"
+      },
+      "ApiResponse_DebugThreadsResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DebugThreadsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[DebugThreadsResponse]",
         "type": "object"
       },
       "ApiResponse_DependencyAnalysisResponse_": {
@@ -2066,6 +2136,17 @@
         "title": "DebugGroupMemberCommandResult",
         "type": "object"
       },
+      "DebugLocalVariablesResponse": {
+        "properties": {
+          "variables": {
+            "items": {},
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "title": "DebugLocalVariablesResponse",
+        "type": "object"
+      },
       "DebugLogicalPartitionRequest": {
         "properties": {
           "partition_name": {
@@ -2195,6 +2276,17 @@
             "title": "Active",
             "type": "boolean"
           },
+          "breakpoint_hit_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakpoint Hit Thread Id"
+          },
           "breakpoints": {
             "items": {
               "additionalProperties": true,
@@ -2243,6 +2335,17 @@
             ],
             "title": "Current Line"
           },
+          "current_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Thread Id"
+          },
           "log_output": {
             "items": {
               "type": "string"
@@ -2271,6 +2374,17 @@
               }
             ],
             "title": "Stop Reason"
+          },
+          "stopped_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped Thread Id"
           },
           "target_output": {
             "items": {
@@ -2370,6 +2484,128 @@
           "executable_path"
         ],
         "title": "DebugTaskRequest",
+        "type": "object"
+      },
+      "DebugThreadResponse": {
+        "properties": {
+          "breakpoint_hit": {
+            "default": false,
+            "title": "Breakpoint Hit",
+            "type": "boolean"
+          },
+          "core": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Core"
+          },
+          "current": {
+            "default": false,
+            "title": "Current",
+            "type": "boolean"
+          },
+          "linux_tid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Linux Tid"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "state"
+        ],
+        "title": "DebugThreadResponse",
+        "type": "object"
+      },
+      "DebugThreadSelectRequest": {
+        "properties": {
+          "thread_id": {
+            "minLength": 1,
+            "pattern": "^\\d+$",
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "title": "DebugThreadSelectRequest",
+        "type": "object"
+      },
+      "DebugThreadsResponse": {
+        "properties": {
+          "breakpoint_hit_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Breakpoint Hit Thread Id"
+          },
+          "current_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Thread Id"
+          },
+          "stopped_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped Thread Id"
+          },
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/DebugThreadResponse"
+            },
+            "title": "Threads",
+            "type": "array"
+          }
+        },
+        "title": "DebugThreadsResponse",
         "type": "object"
       },
       "DebugWaitForStopRequest": {
@@ -5031,6 +5267,69 @@
         ]
       }
     },
+    "/api/v1/modules/co-debug/debug/sessions/{task_id}/local-variables": {
+      "get": {
+        "operationId": "get_debug_local_variables_api_v1_modules_co_debug_debug_sessions__task_id__local_variables_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugLocalVariablesResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Debug Local Variables",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
     "/api/v1/modules/co-debug/debug/sessions/{task_id}/next": {
       "post": {
         "operationId": "next_debug_session_api_v1_modules_co_debug_debug_sessions__task_id__next_post",
@@ -5341,6 +5640,142 @@
           }
         },
         "summary": "Step Debug Session",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/sessions/{task_id}/threads": {
+      "get": {
+        "operationId": "get_debug_threads_api_v1_modules_co_debug_debug_sessions__task_id__threads_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugThreadsResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Debug Threads",
+        "tags": [
+          "co_debug"
+        ]
+      }
+    },
+    "/api/v1/modules/co-debug/debug/sessions/{task_id}/threads/select": {
+      "post": {
+        "operationId": "select_debug_thread_api_v1_modules_co_debug_debug_sessions__task_id__threads_select_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugThreadSelectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_DebugThreadsResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Debug Thread",
         "tags": [
           "co_debug"
         ]

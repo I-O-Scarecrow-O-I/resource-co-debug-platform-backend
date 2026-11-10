@@ -356,6 +356,8 @@ async def test_run_and_breakpoint_hit_update_state():
     )
 
     try:
+        transport.emit('=thread-created,id="2",group-id="i1"')
+        await _wait_until(lambda: "2" in session.state.threads)
         run_task = (
             asyncio.create_task(
                 session.run()
@@ -393,6 +395,8 @@ async def test_run_and_breakpoint_hit_update_state():
             '*stopped,'
             'reason="breakpoint-hit",'
             'bkptno="1",'
+            'thread-id="2",'
+            'stopped-threads="all",'
             'frame={'
             'func="main",'
             'file="main.c",'
@@ -431,6 +435,13 @@ async def test_run_and_breakpoint_hit_update_state():
             session.state.current_function
             == "main"
         )
+        assert session.state.current_thread_id == "2"
+        assert session.state.stopped_thread_id == "2"
+        assert session.state.breakpoint_hit_thread_id == "2"
+        assert session.state.threads["2"].state == "stopped"
+
+        transport.emit('=thread-exited,id="2",group-id="i1"')
+        await _wait_until(lambda: "2" not in session.state.threads)
 
     finally:
         await session.close()

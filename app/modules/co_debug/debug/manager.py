@@ -278,6 +278,18 @@ class GdbMiCommandDispatcher:
                 "frames": frames,
             }, False
 
+        if operation == DebugCommandKind.LOCAL_VARIABLES:
+            variables = await session.list_local_variables()
+            return {"variables": variables}, False
+
+        if operation == DebugCommandKind.THREADS:
+            await session.list_threads()
+            return self._threads_snapshot(session), False
+
+        if operation == DebugCommandKind.SELECT_THREAD:
+            await session.select_thread(arguments["thread_id"])
+            return self._threads_snapshot(session), False
+
         if (
             operation
             == DebugCommandKind.STATE
@@ -361,6 +373,9 @@ class GdbMiCommandDispatcher:
             "current_function": (
                 state.current_function
             ),
+            "current_thread_id": state.current_thread_id,
+            "stopped_thread_id": state.stopped_thread_id,
+            "breakpoint_hit_thread_id": state.breakpoint_hit_thread_id,
             "breakpoints": [
                 cls._breakpoint_snapshot(
                     breakpoint
@@ -380,6 +395,31 @@ class GdbMiCommandDispatcher:
             "stderr_output": list(
                 session.stderr_output
             ),
+        }
+
+    @staticmethod
+    def _threads_snapshot(
+        session: GdbMiSession,
+    ) -> dict[str, Any]:
+        state = session.state
+        return {
+            "threads": [
+                {
+                    "thread_id": thread.thread_id,
+                    "linux_tid": thread.linux_tid,
+                    "name": thread.name,
+                    "state": thread.state,
+                    "core": thread.core,
+                    "current": thread.thread_id == state.current_thread_id,
+                    "breakpoint_hit": (
+                        thread.thread_id == state.breakpoint_hit_thread_id
+                    ),
+                }
+                for thread in state.threads.values()
+            ],
+            "current_thread_id": state.current_thread_id,
+            "stopped_thread_id": state.stopped_thread_id,
+            "breakpoint_hit_thread_id": state.breakpoint_hit_thread_id,
         }
 
 
@@ -692,6 +732,44 @@ class DebugSessionManager:
             timeout_seconds=(
                 timeout_seconds
             ),
+        )
+
+    async def local_variables(
+        self,
+        task_id: UUID,
+        *,
+        timeout_seconds: float = 10,
+    ) -> dict[str, Any]:
+        return await self._request(
+            task_id,
+            DebugCommandKind.LOCAL_VARIABLES,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def threads(
+        self,
+        task_id: UUID,
+        *,
+        timeout_seconds: float = 10,
+    ) -> dict[str, Any]:
+        return await self._request(
+            task_id,
+            DebugCommandKind.THREADS,
+            timeout_seconds=timeout_seconds,
+        )
+
+    async def select_thread(
+        self,
+        task_id: UUID,
+        thread_id: str,
+        *,
+        timeout_seconds: float = 10,
+    ) -> dict[str, Any]:
+        return await self._request(
+            task_id,
+            DebugCommandKind.SELECT_THREAD,
+            timeout_seconds=timeout_seconds,
+            thread_id=thread_id,
         )
 
     async def wait_for_stop(

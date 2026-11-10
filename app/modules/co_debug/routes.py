@@ -18,9 +18,12 @@ from app.modules.co_debug.schemas.debug import (
     DebugBuildCandidate,
     DebugExpressionRequest,
     DebugExpressionResponse,
+    DebugLocalVariablesResponse,
     DebugSessionResponse,
     DebugSessionStateResponse,
     DebugStackFramesResponse,
+    DebugThreadSelectRequest,
+    DebugThreadsResponse,
     DebugWaitForStopRequest,
 )
 from app.modules.co_debug.schemas.debug_workloads import DebugComparisonRequest
@@ -460,6 +463,46 @@ async def get_debug_stack_frames(
     return ApiResponse.ok(
         DebugStackFramesResponse(
             **result
+        )
+    )
+
+
+@router.get(
+    "/debug/sessions/{task_id}/local-variables",
+    response_model=ApiResponse[DebugLocalVariablesResponse],
+)
+async def get_debug_local_variables(
+    task_id: UUID,
+    debug_service: Annotated[DebugSessionService, Depends(get_debug_service)],
+):
+    return ApiResponse.ok(
+        DebugLocalVariablesResponse(**await debug_service.local_variables(task_id))
+    )
+
+
+@router.get(
+    "/debug/sessions/{task_id}/threads",
+    response_model=ApiResponse[DebugThreadsResponse],
+)
+async def get_debug_threads(
+    task_id: UUID,
+    debug_service: Annotated[DebugSessionService, Depends(get_debug_service)],
+):
+    return ApiResponse.ok(DebugThreadsResponse(**await debug_service.threads(task_id)))
+
+
+@router.post(
+    "/debug/sessions/{task_id}/threads/select",
+    response_model=ApiResponse[DebugThreadsResponse],
+)
+async def select_debug_thread(
+    task_id: UUID,
+    request: DebugThreadSelectRequest,
+    debug_service: Annotated[DebugSessionService, Depends(get_debug_service)],
+):
+    return ApiResponse.ok(
+        DebugThreadsResponse(
+            **await debug_service.select_thread(task_id, request.thread_id)
         )
     )
 
