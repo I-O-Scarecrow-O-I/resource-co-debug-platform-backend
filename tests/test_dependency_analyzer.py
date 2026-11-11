@@ -84,6 +84,19 @@ add.o: src/add.c include/add.h
     assert "include/add.h" in dependency_map["add.o"]
 
 
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc is required")
+def test_dependency_analyzer_treats_leading_dash_source_as_a_file(tmp_path):
+    source = tmp_path / "-main.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+
+    project = ProjectParser().parse(tmp_path)
+    dependencies = DependencyAnalyzer().analyze(project)
+
+    assert len(dependencies) == 1
+    assert dependencies[0].source_file == "-main.c"
+    assert dependencies[0].dependencies == ["-main.c"]
+
+
 @pytest.mark.skipif(
     shutil.which("gcc") is None or shutil.which("make") is None,
     reason="gcc and make are required",

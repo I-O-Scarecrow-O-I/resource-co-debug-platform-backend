@@ -3,6 +3,9 @@ from pathlib import Path
 
 from app.modules.co_debug.dependency.models import MakefileModel, MakeRule
 
+# Security: these are fixed grammar patterns, not expressions built from project
+# input.  Both use only simple character-class repetitions/single-pass tails, with no
+# nested quantifiers or ambiguous repeated alternation that could cause ReDoS.
 _VARIABLE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(:=|\?=|\+=|=)\s*(.*)$")
 
 _VARIABLE_REF_RE = re.compile(r"\$\(([^()]+)\)|\${([^{}]+)}")

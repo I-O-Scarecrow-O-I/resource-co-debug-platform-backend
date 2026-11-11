@@ -1,5 +1,3 @@
-import re
-
 from app.modules.co_debug.dependency.models import MakeRule
 
 
@@ -39,5 +37,9 @@ class PatternRuleResolver:
         if pattern.count("%") != 1:
             return None
         prefix, suffix = pattern.split("%", 1)
-        match = re.fullmatch(f"{re.escape(prefix)}(.*){re.escape(suffix)}", target)
-        return match.group(1) if match else None
+        if not target.startswith(prefix) or not target.endswith(suffix):
+            return None
+        if len(target) < len(prefix) + len(suffix):
+            return None
+        stem_end = len(target) - len(suffix) if suffix else len(target)
+        return target[len(prefix):stem_end]

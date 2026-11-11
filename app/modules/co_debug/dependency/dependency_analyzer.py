@@ -362,12 +362,17 @@ class DependencyAnalyzer:
         compiler = self._compiler_for_source(
             source_file
         )
+        source_argument = (
+            f"./{source_file}"
+            if source_file.startswith(("-", "@"))
+            else source_file
+        )
 
         command = [
             compiler,
             "-MM",
             "-MG",
-            source_file,
+            source_argument,
         ]
 
         for include_dir in include_dirs:
@@ -381,6 +386,7 @@ class DependencyAnalyzer:
             capture_output=True,
             text=True,
             check=False,
+            shell=False,
         )
 
         if result.returncode != 0:
