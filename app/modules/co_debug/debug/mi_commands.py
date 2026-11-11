@@ -199,11 +199,47 @@ class MiCommandBuilder:
             ["mi-async", "on"],
         )
 
+    def gdb_set_all_stop(
+        self,
+    ) -> MiCommand:
+        return self._build(
+            "-gdb-set",
+            ["non-stop", "off"],
+        )
+
     def stack_list_frames(
         self,
     ) -> MiCommand:
         return self._build(
             "-stack-list-frames"
+        )
+
+    def stack_list_variables(
+        self,
+    ) -> MiCommand:
+        return self._build(
+            "-stack-list-variables",
+            ["--simple-values"],
+        )
+
+    def thread_info(
+        self,
+    ) -> MiCommand:
+        return self._build(
+            "-thread-info"
+        )
+
+    def thread_select(
+        self,
+        thread_id: str,
+    ) -> MiCommand:
+        self._require_value(
+            thread_id,
+            "thread_id",
+        )
+        return self._build(
+            "-thread-select",
+            [thread_id],
         )
 
     def data_evaluate_expression(

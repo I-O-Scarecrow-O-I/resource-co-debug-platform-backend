@@ -42,6 +42,9 @@ class DebugSessionStateResponse(BaseModel):
     current_file: str | None = None
     current_line: int | None = None
     current_function: str | None = None
+    current_thread_id: str | None = None
+    stopped_thread_id: str | None = None
+    breakpoint_hit_thread_id: str | None = None
 
     breakpoints: list[
         dict[str, Any]
@@ -88,6 +91,10 @@ class DebugExpressionRequest(BaseModel):
     )
 
 
+class DebugThreadSelectRequest(BaseModel):
+    thread_id: str = Field(min_length=1, pattern=r"^\d+$")
+
+
 class DebugWaitForStopRequest(BaseModel):
     timeout_seconds: (
         float
@@ -117,3 +124,24 @@ class DebugStackFramesResponse(BaseModel):
     frames: list[Any] = Field(
         default_factory=list
     )
+
+
+class DebugLocalVariablesResponse(BaseModel):
+    variables: list[Any] = Field(default_factory=list)
+
+
+class DebugThreadResponse(BaseModel):
+    thread_id: str
+    linux_tid: int | None = None
+    name: str | None = None
+    state: str
+    core: int | None = None
+    current: bool = False
+    breakpoint_hit: bool = False
+
+
+class DebugThreadsResponse(BaseModel):
+    threads: list[DebugThreadResponse] = Field(default_factory=list)
+    current_thread_id: str | None = None
+    stopped_thread_id: str | None = None
+    breakpoint_hit_thread_id: str | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -22,6 +23,7 @@ from app.modules.co_debug.debug.models import (
     DebugBreakpoint,
     DebugSessionState,
     DebugSessionStateModel,
+    DebugThread,
     MiCommand,
     MiRecord,
     MiRecordKind,
@@ -323,6 +325,12 @@ class GdbMiSession:
             record,
             allowed_classes={"done"},
         )
+
+    async def enforce_all_stop(self) -> None:
+        """Explicitly keep the inferior in GDB all-stop mode."""
+        command = self.command_builder.gdb_set_all_stop()
+        record = await self._execute(command)
+        self._require_success(command, record, allowed_classes={"done"})
 
     async def insert_breakpoint(
         self,
@@ -646,6 +654,60 @@ class GdbMiSession:
             return []
 
         return stack
+
+    async def list_local_variables(
+        self,
+    ) -> list[Any]:
+        command = (
+            self.command_builder
+            .stack_list_variables()
+        )
+        record = await self._execute(command)
+        self._require_success(
+            command,
+            record,
+            allowed_classes={"done"},
+        )
+        if not isinstance(record.payload, dict):
+            return []
+        variables = record.payload.get("variables")
+        return variables if isinstance(variables, list) else []
+
+    async def list_threads(
+        self,
+    ) -> list[DebugThread]:
+        command = self.command_builder.thread_info()
+        record = await self._execute(command)
+        self._require_success(
+            command,
+            record,
+            allowed_classes={"done"},
+        )
+        self._update_threads_from_record(record)
+        return list(self.state.threads.values())
+
+    async def select_thread(
+        self,
+        thread_id: str,
+    ) -> list[DebugThread]:
+        # Refresh first so a stale UI cannot select a thread that has exited.
+        await self.list_threads()
+        if thread_id not in self.state.threads:
+            raise GdbMiError(
+                f"thread does not exist in this debug session: {thread_id}"
+            )
+
+        command = self.command_builder.thread_select(thread_id)
+        record = await self._execute(command)
+        self._require_success(
+            command,
+            record,
+            allowed_classes={"done"},
+        )
+        self.state.current_thread_id = thread_id
+        if isinstance(record.payload, dict):
+            self._update_current_frame(record.payload.get("frame"))
+        return await self.list_threads()
 
     async def wait_for_stop(
         self,
@@ -1019,6 +1081,14 @@ class GdbMiSession:
                     record
                 )
 
+            return
+
+        if (
+            record.kind
+            == MiRecordKind.NOTIFY_ASYNC
+        ):
+            self._handle_notify_record(record)
+
     def _handle_stopped_record(
         self,
         record: MiRecord,
@@ -1042,6 +1112,28 @@ class GdbMiSession:
                 reason,
                 str,
             )
+            else None
+        )
+
+        stopped_thread_id = payload.get("thread-id")
+        if isinstance(stopped_thread_id, str) and stopped_thread_id:
+            self.state.stopped_thread_id = stopped_thread_id
+            self.state.current_thread_id = stopped_thread_id
+            self.state.threads.setdefault(
+                stopped_thread_id,
+                DebugThread(thread_id=stopped_thread_id),
+            )
+
+        stopped_threads = payload.get("stopped-threads")
+        if stopped_threads == "all":
+            for thread in self.state.threads.values():
+                thread.state = "stopped"
+        elif isinstance(stopped_thread_id, str):
+            self.state.threads[stopped_thread_id].state = "stopped"
+
+        self.state.breakpoint_hit_thread_id = (
+            stopped_thread_id
+            if reason == "breakpoint-hit" and isinstance(stopped_thread_id, str)
             else None
         )
 
@@ -1105,6 +1197,8 @@ class GdbMiSession:
             self._set_state(
                 DebugSessionState.EXITED
             )
+            self.state.stopped_thread_id = None
+            self.state.breakpoint_hit_thread_id = None
 
         else:
             self._set_state(
@@ -1123,6 +1217,78 @@ class GdbMiSession:
                         breakpoint_number=breakpoint_number,
                     )
                 )
+
+    def _handle_notify_record(
+        self,
+        record: MiRecord,
+    ) -> None:
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        thread_id = payload.get("id")
+        if not isinstance(thread_id, str) or not thread_id:
+            return
+
+        if record.message_class == "thread-created":
+            self.state.threads.setdefault(
+                thread_id,
+                DebugThread(thread_id=thread_id, state="running"),
+            )
+        elif record.message_class == "thread-exited":
+            self.state.threads.pop(thread_id, None)
+            if self.state.current_thread_id == thread_id:
+                self.state.current_thread_id = None
+            if self.state.stopped_thread_id == thread_id:
+                self.state.stopped_thread_id = None
+            if self.state.breakpoint_hit_thread_id == thread_id:
+                self.state.breakpoint_hit_thread_id = None
+        elif record.message_class == "thread-selected":
+            self.state.current_thread_id = thread_id
+
+    def _update_threads_from_record(
+        self,
+        record: MiRecord,
+    ) -> None:
+        payload = record.payload if isinstance(record.payload, dict) else {}
+        raw_threads = payload.get("threads")
+        refreshed: dict[str, DebugThread] = {}
+        if isinstance(raw_threads, list):
+            for item in raw_threads:
+                data = item.get("thread") if isinstance(item, dict) and "thread" in item else item
+                if not isinstance(data, dict):
+                    continue
+                thread_id = data.get("id")
+                if not isinstance(thread_id, str) or not thread_id:
+                    continue
+                target_id = data.get("target-id")
+                refreshed[thread_id] = DebugThread(
+                    thread_id=thread_id,
+                    linux_tid=self._linux_tid(target_id),
+                    name=data.get("name") if isinstance(data.get("name"), str) else None,
+                    state=data.get("state") if isinstance(data.get("state"), str) else "unknown",
+                    core=self._to_int(data.get("core")),
+                )
+
+        self.state.threads = refreshed
+        current = payload.get("current-thread-id")
+        if isinstance(current, str) and current:
+            self.state.current_thread_id = current
+        elif self.state.current_thread_id not in refreshed:
+            self.state.current_thread_id = None
+
+    @staticmethod
+    def _linux_tid(target_id: Any) -> int | None:
+        if not isinstance(target_id, str):
+            return None
+        match = re.search(r"\bLWP\s+(\d+)\b", target_id, re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    def _update_current_frame(self, frame: Any) -> None:
+        if not isinstance(frame, dict):
+            return
+        file_value = frame.get("fullname") or frame.get("file")
+        self.state.current_file = file_value if isinstance(file_value, str) else None
+        function = frame.get("func")
+        self.state.current_function = function if isinstance(function, str) else None
+        self.state.current_line = self._to_int(frame.get("line"))
 
     def _publish_event(self, event: DebugSessionEvent) -> None:
         publisher = self.event_publisher
@@ -1144,6 +1310,10 @@ class GdbMiSession:
             DebugSessionState.RUNNING
         ):
             self._stop_event.clear()
+            self.state.stopped_thread_id = None
+            self.state.breakpoint_hit_thread_id = None
+            for thread in self.state.threads.values():
+                thread.state = "running"
 
         elif state in {
             DebugSessionState.STOPPED,

@@ -127,6 +127,17 @@ class DebugBreakpoint:
 
 
 @dataclass(slots=True)
+class DebugThread:
+    """A thread reported by GDB for the current inferior."""
+
+    thread_id: str
+    linux_tid: int | None = None
+    name: str | None = None
+    state: str = "unknown"
+    core: int | None = None
+
+
+@dataclass(slots=True)
 class DebugSessionStateModel:
     """
     单个 DebugSession 的当前业务状态。
@@ -147,3 +158,13 @@ class DebugSessionStateModel:
     current_line: int | None = None
 
     current_function: str | None = None
+
+    threads: dict[str, DebugThread] = field(
+        default_factory=dict
+    )
+
+    current_thread_id: str | None = None
+
+    stopped_thread_id: str | None = None
+
+    breakpoint_hit_thread_id: str | None = None

@@ -25,6 +25,9 @@ class DebugCommandKind(StrEnum):
 
     EVALUATE = "evaluate"
     STACK_FRAMES = "stack_frames"
+    LOCAL_VARIABLES = "local_variables"
+    THREADS = "threads"
+    SELECT_THREAD = "select_thread"
 
     STATE = "state"
     WAIT_FOR_STOP = "wait_for_stop"

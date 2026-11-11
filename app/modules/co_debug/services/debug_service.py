@@ -7,7 +7,7 @@ from app.core.errors import AppError
 from app.modules.co_debug.debug.manager import (
     DebugSessionManager,
 )
-from app.modules.co_debug.debug.session import GdbMiCommandError
+from app.modules.co_debug.debug.session import GdbMiCommandError, GdbMiError
 from app.modules.co_debug.schemas.debug import (
     DebugSessionResponse,
     DebugSessionStateResponse,
@@ -110,6 +110,9 @@ class DebugSessionService:
                 "interrupt",
                 "evaluate",
                 "stack_frames",
+                "local_variables",
+                "threads",
+                "select_thread",
                 "wait_for_stop",
                 "close",
             ],
@@ -355,6 +358,31 @@ class DebugSessionService:
             )
         )
 
+    async def local_variables(
+        self,
+        task_id: UUID,
+    ) -> dict[str, Any]:
+        manager = self._require_active(task_id)
+        return await manager.local_variables(task_id)
+
+    async def threads(
+        self,
+        task_id: UUID,
+    ) -> dict[str, Any]:
+        manager = self._require_active(task_id)
+        return await manager.threads(task_id)
+
+    async def select_thread(
+        self,
+        task_id: UUID,
+        thread_id: str,
+    ) -> dict[str, Any]:
+        manager = self._require_active(task_id)
+        try:
+            return await manager.select_thread(task_id, thread_id)
+        except GdbMiError as exc:
+            raise AppError(f"Failed to select debug thread: {exc}") from exc
+
     async def close(
         self,
         task_id: UUID,
@@ -487,6 +515,9 @@ class DebugSessionService:
                     "current_function"
                 )
             ),
+            current_thread_id=snapshot.get("current_thread_id"),
+            stopped_thread_id=snapshot.get("stopped_thread_id"),
+            breakpoint_hit_thread_id=snapshot.get("breakpoint_hit_thread_id"),
             breakpoints=list(
                 snapshot.get(
                     "breakpoints",

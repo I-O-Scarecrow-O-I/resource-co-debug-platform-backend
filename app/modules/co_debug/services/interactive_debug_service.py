@@ -322,6 +322,7 @@ class InteractiveDebugService:
                         context.timeout_seconds
                     )
                 )
+                await session.enforce_all_stop()
                 await session.enable_async_execution()
 
                 # 只有真正收到 (gdb) prompt 后，

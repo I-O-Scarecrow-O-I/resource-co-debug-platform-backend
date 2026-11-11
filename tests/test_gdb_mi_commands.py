@@ -225,6 +225,10 @@ def test_inspection_commands():
         )
     )
 
+    variables = builder.stack_list_variables()
+    threads = builder.thread_info()
+    select_thread = builder.thread_select("2")
+
     assert (
         frames.text
         == "1-stack-list-frames"
@@ -234,6 +238,9 @@ def test_inspection_commands():
         '2-data-evaluate-expression '
         '"counter + 1"'
     )
+    assert variables.text == "3-stack-list-variables --simple-values"
+    assert threads.text == "4-thread-info"
+    assert select_thread.text == "5-thread-select 2"
 
 
 def test_command_builder_escapes_values():
