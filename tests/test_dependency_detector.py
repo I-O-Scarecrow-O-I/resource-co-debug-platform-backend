@@ -2,6 +2,7 @@ from app.modules.co_debug.dependency.dependency_analyzer import DependencyAnalyz
 from app.modules.co_debug.dependency.dependency_detector import DependencyDetector
 from app.modules.co_debug.dependency.makefile_parser import MakefileParser
 from app.modules.co_debug.dependency.models import ActualDependency
+from app.modules.co_debug.dependency.pattern_rule_resolver import PatternRuleResolver
 from app.modules.co_debug.dependency.project_parser import ProjectParser
 
 
@@ -130,6 +131,16 @@ def test_pattern_rule_is_instantiated_for_an_actual_target(tmp_path):
     )
 
     assert missing == []
+
+
+def test_pattern_rule_matching_preserves_literal_prefix_suffix_semantics():
+    match = PatternRuleResolver._match
+
+    assert match("src/%.c", "src/main.c") == "main"
+    assert match("%.c", ".c") == ""
+    assert match("src/%", "src/main.c") == "main.c"
+    assert match("aa%aa", "aaa") is None
+    assert match("src/%.c", "lib/main.c") is None
 
 
 def test_generated_header_rule_does_not_hide_missing_compile_dependency(tmp_path):
