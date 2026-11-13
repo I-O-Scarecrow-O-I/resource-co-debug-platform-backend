@@ -66,6 +66,8 @@ NaturalCC README 将 `code_agent` 作为 Agent 服务实现，`ncc` 是它复用
 
 ### 4.2 后端配置
 
+如需按本机/实验室后端预检流程启动、限制为 loopback 监听并将存储放到仓库外，请参阅[Windows 实验室内网后端准备与启动](windows-intranet-backend.md)。该流程仅覆盖平台后端，不配置 NaturalCC 模型服务。
+
 后端从仓库根目录读取 `.env`（配置定义在 `app/core/config.py`）。如尚无本机 `.env`，可复制模板：
 
 ```powershell

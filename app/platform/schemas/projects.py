@@ -7,6 +7,8 @@ from app.platform.domain.enums import ProjectStatus
 from app.platform.domain.project import ProjectWorkspace
 
 
+# 上传和查询共享项目快照，字段以工作区状态为准。
+# 根目录承载项目资源，源码目录单独用于业务读取。
 class ProjectResponse(BaseModel):
     id: UUID
     name: str
@@ -16,6 +18,7 @@ class ProjectResponse(BaseModel):
     created_at: datetime
 
     @classmethod
+    # 路径对象在 HTTP 边界序列化成字符串；该转换不重新探测磁盘状态。
     def from_workspace(cls, workspace: ProjectWorkspace) -> "ProjectResponse":
         return cls(
             id=workspace.id,

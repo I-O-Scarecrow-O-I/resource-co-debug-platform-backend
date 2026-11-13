@@ -25,6 +25,8 @@ metadata、日志或文档示例。后端通过 `NATURALCC_BASE_URL`、连接/�
 
 可选的 NaturalCC 本地 Ollama 离线路径见[集中部署说明](naturalcc-offline-deployment.md)；它不改变默认 DeepSeek 配置或 `NATURALCC_APPROVE_EXECUTE=false` 的审批边界。
 
+上述 Ollama 配置只说明该特定路径，不表示当前 NaturalCC 已支持任意实验室 OpenAI 兼容模型地址或 vLLM，并贯通 Agent、Pipeline 与 Aider。Windows 平台后端的 loopback 预检和启动步骤见[实验室内网后端说明](windows-intranet-backend.md)；`NATURALCC_BASE_URL` 指向 NaturalCC 应用 API，不是模型 `/v1` 地址。模型服务适配由 NaturalCC 维护，不应将模型 URL 或认证信息写入平台后端配置。
+
 ## 运行与验证
 
 启动后端后先验证：
