@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     naturalcc_request_timeout_seconds: float = Field(default=30.0, gt=0)
     # 远端工具执行缺省不预授权，代码写入与执行许可按不同策略处理。
     naturalcc_approve_execute: bool = False
-    # 仅在上游已隔离审计工具、审批入口及自动记忆后启用。
+    # 兼容旧 Agent 审计任务；新的纯模型漏洞扫描使用 /api/run，不读取此开关。
     naturalcc_model_audit_enabled: bool = False
     # CORS 来源使用逗号列表兼容环境变量；不要求运营方写 JSON 数组。
     allowed_cors_origins: Annotated[list[str], NoDecode] = Field(
@@ -83,4 +83,3 @@ class Settings(BaseSettings):
 # 设置由应用依赖复用，避免每个请求重新读取环境变量。
 def get_settings() -> Settings:
     return Settings()
-

@@ -58,6 +58,7 @@ Windows 本地会话应如上设置 `LIBCLANG_PATH`。当前已使用
 位于服务进程的 `PATH`，仅在浏览器或调用端安装无效。
 若 builtin 或 Cppcheck 未达到要求，deep 扫描会失败并保留 coverage 诊断。`partial` coverage 只说明有部分结果，不能
 视为完整覆盖。代码生成自检按目标文件扩展名选择分析器：C/C++ 使用 Cppcheck，其他文件使用 builtin。
+`mode=builtin` 可同时提供 `ground_truth_file`：NaturalCC 只按内置规则候选计算正式指标，Cppcheck 会记录为 `not_requested` 且 Clang 不会启动，内置规则未命中的有效缺陷标注计为 FN。
 
 NaturalCC `5ec92ac` 为 C/C++ 增加了无宽度 `scanf` 等候选检测和语义复核清单；清单写入文本 `report`，
 其结构化 `review_guidance` 当前未由后端单独透传。内建 `cwe-362` 仅为低置信候选，内建 `cwe-78` 不支持
@@ -81,13 +82,12 @@ TSan 结果日志必须先位于扫描所用 workspace 内，再通过相对路�
 ### 指标 3：模型辅助模式
 
 - **页面与 API 默认**：指标 3 页面预选“模型辅助检测”，仍可选静态扫描。API 请求省略 `strategy` 时仍走静态扫描。
-- **请求**：沿用 `POST /api/v1/modules/vulnerability/tasks`。模型模式发送 `strategy="model_assisted"`、`scope="targets"`、`scan_type="frequent_defects"`、`project_id` 和 `target_files`（指定 C/C++ 源文件或头文件的项目内相对路径），可选 `timeout_seconds`。不发送真值、增量参数、附件或 `mode`、`severity_threshold`、`max_findings` 等静态设置。
-- **部署**：平台后端开关 `NATURALCC_MODEL_AUDIT_ENABLED` 默认关闭。NaturalCC 服务须能访问平台任务副本，并使用服务端默认模型配置；要展示思索增量，须配置能返回 `reasoning` 的供应商。平台请求无需传入模型密钥。
-- **启用前置条件**：在审计所用的 NaturalCC 实例上设置 `CODE_AGENT_AUTO_MEMORY_MODE=off`（默认 `auto`），并验证实例隔离和工具策略确实限制为只读。审计不执行命令、不修复文件，平台不批准任何待批工具；提示词不能作为安全边界。
-- **共用实例限制**：NaturalCC `a4ff164e` 的 `CODE_AGENT_DENIED_TOOLS` 是进程级拒绝名单，当前没有每 Run 的只读工具白名单。若共用实例必须保留代码生成的写权限，同时要求审计有严格的每 Run 白名单，当前不满足条件，应保持后端开关关闭。
-- **联调**：任务日志 WebSocket 中只将 `vulnerability.model_reasoning` 流用于展示思索增量，最终答复读取 `result.final_answer`。没有思索事件时仍可返回最终答复，不能据此判断未调用模型。
-- **实机启用前待核对：思索脱敏**。上游当前逐段处理思索分片，跨分片的敏感文本能否完整脱敏尚未验证。
-- **实机启用前待核对：取消与副本回收**。上游返回 `cancelled` 不保证远端执行线程已退出，当前实现继承这一边界。须确认线程已退出再回收任务副本；该确认流程尚未在实机验证。
+- **请求**：沿用 `POST /api/v1/modules/vulnerability/tasks`。模型模式发送 `strategy="model_assisted"`；`scan_type` 支持 `frequent_defects` 和 `high_risk`，`scope` 支持 `targets` 和 `project`，也可发送 `ground_truth_file`、`severity_threshold`、`max_findings`、`source_task_id` 与 `timeout_seconds`。`targets` 支持 NaturalCC 声明的 C/C++、Java、Python、JavaScript/TypeScript、Go 和 PHP 源文件类型。模型模式拒绝仅对静态检测有意义的 `incremental=true`、`sanitizer_report` 和 `rule_profile`。
+- **上游协议**：综合后端把模型策略映射为 `POST /api/run` 的 `feature="vulnerability_detection"` 和 `feature_config.detection_mode="model"`。不使用旧 `/api/agent/runs` 多轮审计协议，也不创建 Thread、批准工具或读取 `final_answer`。
+- **部署**：NaturalCC 服务须能访问平台任务副本，并使用服务端默认模型配置。平台不发送 `api_key`、`runtime_model_config` 或模型名；旧 `NATURALCC_MODEL_AUDIT_ENABLED` 只为历史 Agent 审计兼容保留，不控制新的纯模型扫描。
+- **结果与日志**：最终结果只读取 `done.artifacts.findings`，并保存 coverage、合同统计、usage、summaries、reported_models 与源码哈希。`model.reasoning.delta` 顶层 `text` 经分段和总量限制写入 `vulnerability.model_reasoning`；未经最终校验的 `model.content.delta` 不写日志也不作为结果。
+- **GT**：真值只用于 NaturalCC 扫描后的正式评分，不进入模型提示。平台仅在成功终态、结构有效且模型 coverage 为 `completed` 时发布成功结果；失败任务不得发布正式 GT 分数。
+- **预算**：平台 `timeout_seconds` 接受 1–1800 秒，与 NaturalCC 模型任务默认最长预算一致，并把扣除本地准备和收尾预留后的时间作为 `analysis_timeout_seconds`。
 - **验收计时**：合同要求“测试并统计系统的风险检测平均时耗”，阈值为“响应时间小于5秒”。首段思索只衡量用户感知延迟，首段思索和提交反馈均不作为合同验收时耗。
 
 ## 工具与 deferred approval

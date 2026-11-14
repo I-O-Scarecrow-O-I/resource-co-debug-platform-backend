@@ -95,9 +95,16 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 可选字段：`source_task_id`（同项目已成功任务的 UUID；见下文）、`mode`（`builtin`、`deep` 或 `comprehensive`，默认
 `deep`）、`target_files`（工作区相对路径，最多 500 项，默认空列表）、`sanitizer_report`（工作区内的
 相对日志路径）、`incremental`（默认 `false`）、`severity_threshold`（`low`/`medium`/`high`/
-`critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–1000 秒，默认由
+`critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–1800 秒，默认由
 服务配置决定）、`ground_truth_file`（可选，真值文件的工作区相对路径）、`rule_profile`（可选，`default`/`c_cpp`/`web`）。`targets` 范围的文件列表需包含真值引用的全部源文件。`max_findings` 限制 findings 返回列表；NaturalCC 在展示截断前计算 `contract_statistics`，前端保持上限 100 即可。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
 `..`；`scope=project` 可不传 `target_files`。
+
+静态扫描可组合 `mode=builtin` 与 `ground_truth_file`，仅使用 NaturalCC 内置规则完成正式评估；此时 Cppcheck coverage 为 `not_requested`，Clang 不会启动，有效 GT 缺陷未被内置规则命中时按 FN 计入指标。综合后端直接校验并透传 NaturalCC 返回的 `contract_statistics`，不在本地重算。
+
+`strategy` 默认为 `static`。设置为 `model_assisted` 时，综合后端通过 NaturalCC `/api/run` 发送
+`detection_mode=model`，支持两种 `scan_type`、两种 `scope` 和 GT 评分；不要同时发送 `incremental=true`、
+`sanitizer_report` 或 `rule_profile`。模型模式的最终表格仍读取 `result.findings`，推理增量读取任务日志中的
+`vulnerability.model_reasoning`；不要使用临时的模型 content 分片拼装结果。
 
 ```json
 {
@@ -118,6 +125,10 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 任务 `status` 与 coverage：`deep` 要求 builtin 为 `completed`，且 Cppcheck 至少有 `completed` 或
 `partial` coverage 才能通过；`partial` 明确表示部分覆盖，不代表完整 C/C++ 扫描。分析器不可用或未达到要求时任务会失败，
 coverage 仍可能包含诊断信息。
+
+模型模式要求 `engine=model,status=completed`；`result.execution.detection_mode` 为 `model`，并可读取
+`result.usage`、`result.summaries`、`result.reported_models` 和 `result.source_sha256`。没有 reasoning 事件
+不代表任务失败，任务终态与结构化 findings/coverage 才是最终依据。
 
 扫描结果包含 `findings` / `raw_findings`（NaturalCC 返回的展示列表，受 `max_findings` 截断）、
 `target_findings`、`extra_findings`、coverage、报告和 `contract_statistics`。请求不传 `analyzer`；

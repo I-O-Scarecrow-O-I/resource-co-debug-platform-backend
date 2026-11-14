@@ -3506,7 +3506,7 @@
           "timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 1000.0,
+                "maximum": 1800.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
