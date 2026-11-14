@@ -78,6 +78,18 @@ TSan 结果日志必须先位于扫描所用 workspace 内，再通过相对路�
 文件存在且路径留在 workspace 内，不接受本机绝对路径或 workspace 外文件。
 当前流程只导入已有 TSan 日志，不会自动编译或运行目标程序；openEuler 下的自动执行能力尚未验证。
 
+### 指标 3：模型辅助模式
+
+- **页面与 API 默认**：指标 3 页面预选“模型辅助检测”，仍可选静态扫描。API 请求省略 `strategy` 时仍走静态扫描。
+- **请求**：沿用 `POST /api/v1/modules/vulnerability/tasks`。模型模式发送 `strategy="model_assisted"`、`scope="targets"`、`scan_type="frequent_defects"`、`project_id` 和 `target_files`（指定 C/C++ 源文件或头文件的项目内相对路径），可选 `timeout_seconds`。不发送真值、增量参数、附件或 `mode`、`severity_threshold`、`max_findings` 等静态设置。
+- **部署**：平台后端开关 `NATURALCC_MODEL_AUDIT_ENABLED` 默认关闭。NaturalCC 服务须能访问平台任务副本，并使用服务端默认模型配置；要展示思索增量，须配置能返回 `reasoning` 的供应商。平台请求无需传入模型密钥。
+- **启用前置条件**：在审计所用的 NaturalCC 实例上设置 `CODE_AGENT_AUTO_MEMORY_MODE=off`（默认 `auto`），并验证实例隔离和工具策略确实限制为只读。审计不执行命令、不修复文件，平台不批准任何待批工具；提示词不能作为安全边界。
+- **共用实例限制**：NaturalCC `a4ff164e` 的 `CODE_AGENT_DENIED_TOOLS` 是进程级拒绝名单，当前没有每 Run 的只读工具白名单。若共用实例必须保留代码生成的写权限，同时要求审计有严格的每 Run 白名单，当前不满足条件，应保持后端开关关闭。
+- **联调**：任务日志 WebSocket 中只将 `vulnerability.model_reasoning` 流用于展示思索增量，最终答复读取 `result.final_answer`。没有思索事件时仍可返回最终答复，不能据此判断未调用模型。
+- **实机启用前待核对：思索脱敏**。上游当前逐段处理思索分片，跨分片的敏感文本能否完整脱敏尚未验证。
+- **实机启用前待核对：取消与副本回收**。上游返回 `cancelled` 不保证远端执行线程已退出，当前实现继承这一边界。须确认线程已退出再回收任务副本；该确认流程尚未在实机验证。
+- **验收计时**：合同要求“测试并统计系统的风险检测平均时耗”，阈值为“响应时间小于5秒”。首段思索只衡量用户感知延迟，首段思索和提交反馈均不作为合同验收时耗。
+
 ## 工具与 deferred approval
 
 | 上游工具或状态 | 风险与后端行为 |

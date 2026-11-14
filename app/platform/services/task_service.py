@@ -256,6 +256,7 @@ class TaskService:
         preserve_workspace_on_success: bool = False,
         workspace_completion_metadata_on_success: dict[str, object] | None = None,
         artifacts_on_success: bool = False,
+        workspace_target_files: list[str] | None = None,
     ) -> TaskRecord:
         """Run module orchestration with an operation timeout and optional total deadline.
 
@@ -306,6 +307,7 @@ class TaskService:
                         workspace_completion_metadata_on_success
                     ),
                     artifacts_on_success=artifacts_on_success,
+                    workspace_target_files=workspace_target_files,
                 ),
             )
         # 若未能安排后台任务，撤销已登记的钩子，防止悬挂引用。
@@ -752,6 +754,7 @@ class TaskService:
         preserve_workspace_on_success: bool,
         workspace_completion_metadata_on_success: dict[str, object] | None,
         artifacts_on_success: bool,
+        workspace_target_files: list[str] | None,
     ) -> None:
         # 未认领到说明状态已变化，例如排队期间已取消。
         task = self.task_store.try_start(task_id)
@@ -777,11 +780,15 @@ class TaskService:
             # 模块可能请求多轮工作区，不能让已取消任务继续复制下一轮。
             self._raise_if_cancel_requested(task_id)
             # 平台按项目归属选择项目源或已解析的来源副本，模块只选私有副本名称。
+            selection = (
+                {"target_files": workspace_target_files} if workspace_target_files is not None else {}
+            )
             workspace = self.workspace_service.create_task_workspace(
                 project_id,
                 task_id,
                 source_path=source_workspace,
                 workspace_name=workspace_name,
+                **selection,
             )
             # 记录解析后的目录身份，后续只能把这些目录作为交互进程的工作区根。
             task_workspaces.add(workspace.resolve())

@@ -20,6 +20,7 @@ benchmark-results/
 /PROGRESS.md
 /docs/暂存交流文档/
 .codex/memory/LEARNINGS.md
-/tests
+/tests/*
+!/tests/test_model_assisted_audit.py
 /.codex
 /.codex

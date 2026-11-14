@@ -5,7 +5,7 @@ import stat
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
-from shutil import copytree, rmtree
+from shutil import copyfile, copytree, rmtree
 from uuid import UUID, uuid4
 from zipfile import BadZipFile, ZipFile
 
@@ -159,6 +159,7 @@ class WorkspaceService:
         task_id: UUID,
         source_path: Path | None = None,
         workspace_name: str | None = None,
+        target_files: list[str] | None = None,
     ) -> Path:
         # 任务 ID 区分请求，副本名区分同一任务内部的运行。
         # 比较任务可以在一个任务根内创建多个互不共享写入的树。
@@ -178,7 +179,33 @@ class WorkspaceService:
         ):
             raise AppError("invalid task workspace path")
         # 使用新建目录复制，不将新源内容合并进已存在的固定副本。
-        copytree(source_path or project.source_path, workspace)
+        source = source_path or project.source_path
+        if target_files is None:
+            copytree(source, workspace)
+        else:
+            if (
+                self._is_link_or_reparse_point(source)
+                or not source.resolve().is_relative_to(project_root)
+            ):
+                raise AppError("invalid task workspace source")
+            selected: list[tuple[Path, Path]] = []
+            for relative_path in target_files:
+                relative = Path(relative_path)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise AppError("target file must be relative to the workspace")
+                current = source
+                for component in relative.parts:
+                    current /= component
+                    if self._is_link_or_reparse_point(current):
+                        raise AppError("target files must not contain links or reparse points")
+                resolved = self.resolve_path_in_workspace(source, relative_path)
+                if not resolved.is_file():
+                    raise AppError(f"target file does not exist: {relative_path}")
+                selected.append((resolved, workspace / relative))
+            workspace.mkdir(parents=True)
+            for original, target in selected:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                copyfile(original, target)
         return workspace
 
     def sync_project_incremental_workspace(
