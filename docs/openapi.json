@@ -3486,18 +3486,27 @@
             ],
             "title": "Source Task Id"
           },
+          "strategy": {
+            "default": "static",
+            "enum": [
+              "static",
+              "model_assisted"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
           "target_files": {
             "items": {
               "type": "string"
             },
-            "maxItems": 120,
+            "maxItems": 500,
             "title": "Target Files",
             "type": "array"
           },
           "timeout_seconds": {
             "anyOf": [
               {
-                "maximum": 1000.0,
+                "maximum": 1800.0,
                 "minimum": 1.0,
                 "type": "integer"
               },

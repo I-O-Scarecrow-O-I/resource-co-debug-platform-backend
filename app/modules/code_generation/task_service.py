@@ -287,7 +287,11 @@ class CodeGenerationTaskService:
                 budget.get("max_seconds", timeout_seconds),
                 timeout_seconds,
             )
-            goal = _AUDIT_GOAL if audit else self._goal(request.operation.value, request.instruction)
+            goal = (
+                _AUDIT_GOAL
+                if audit
+                else self._goal(request.operation.value, request.instruction)
+            )
             # 单调时钟截止在上游编排和后置扫描之间共享，事件查询不会刷新它。
             deadline = asyncio.get_running_loop().time() + timeout_seconds
             async with asyncio.timeout(timeout_seconds):
@@ -470,7 +474,9 @@ class CodeGenerationTaskService:
                 event_type = event.get("type")
                 if event_type == "approval.requested":
                     raise AppError(_AUDIT_APPROVAL_ERROR)
-                if event_type != "model.reasoning.delta" or not (reasoning_chunks and reasoning_remaining):
+                if event_type != "model.reasoning.delta" or not (
+                    reasoning_chunks and reasoning_remaining
+                ):
                     continue
                 payload = event.get("payload")
                 delta = payload.get("text") if isinstance(payload, dict) else None
@@ -644,8 +650,9 @@ class CodeGenerationTaskService:
                     max_findings=30,
                     timeout_seconds=scan_remaining,
                     analysis_timeout_seconds=scan_remaining,
-                    on_event=lambda kind: context.log(
-                        f"Pipeline self scan event: {kind}", stream="code_generation.adapter"
+                    on_event=lambda event: context.log(
+                        f"Pipeline self scan event: {event.get('type')}",
+                        stream="code_generation.adapter",
                     ),
                 )
             context.raise_if_cancelled()
