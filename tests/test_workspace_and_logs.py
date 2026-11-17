@@ -5,7 +5,7 @@ import stat
 import sys
 import time
 from datetime import timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import pytest
@@ -505,6 +505,49 @@ def test_invalid_archive_api_response_has_no_orphan_directory(tmp_path) -> None:
     assert response.status_code == 400
     assert response.json()["message"] == "invalid zip archive"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_project_archive_update_preserves_identity_and_replaces_source(tmp_path) -> None:
+    workspace_service = WorkspaceService(tmp_path)
+    app = create_app()
+    app.dependency_overrides[get_workspace_service] = lambda: workspace_service
+    client = TestClient(app)
+
+    original = io.BytesIO()
+    with ZipFile(original, "w") as zip_file:
+        zip_file.writestr("src/changed.c", "int value = 1;\n")
+        zip_file.writestr("src/deleted.c", "int deleted = 1;\n")
+    replacement = io.BytesIO()
+    with ZipFile(replacement, "w") as zip_file:
+        zip_file.writestr("src/changed.c", "int value = 2;\n")
+        zip_file.writestr("src/added.c", "int added = 1;\n")
+
+    try:
+        created = client.post(
+            "/api/v1/projects",
+            files={"archive": ("project.zip", original.getvalue(), "application/zip")},
+        )
+        project = created.json()["data"]
+        response = client.put(
+            f"/api/v1/projects/{project['id']}/archive",
+            files={"archive": ("project.zip", replacement.getvalue(), "application/zip")},
+        )
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    result = response.json()["data"]
+    assert result == {
+        "project": project,
+        "changed_files": 1,
+        "added_files": 1,
+        "deleted_files": 1,
+        "unchanged_files": 0,
+    }
+    source = workspace_service.require_project(UUID(project["id"])).source_path
+    assert (source / "src/changed.c").read_text(encoding="utf-8") == "int value = 2;\n"
+    assert (source / "src/added.c").is_file()
+    assert not (source / "src/deleted.c").exists()
 
 
 @pytest.mark.asyncio

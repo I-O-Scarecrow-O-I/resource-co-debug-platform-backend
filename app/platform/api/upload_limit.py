@@ -84,8 +84,17 @@ class ProjectUploadSizeLimitMiddleware:
     # 限定路由和 HTTP 方法，日志 WebSocket 与其他请求保持原有接收方式。
     def _is_project_upload(scope: Scope) -> bool:
         # 这一约束绑定到注册的上传入口；路由前缀若迁移需同步检查此匹配规则。
-        return scope["type"] == "http" and (
-            scope["method"] == "POST" and scope["path"] == "/api/v1/projects"
+        if scope["type"] != "http":
+            return False
+        if scope["method"] == "POST" and scope["path"] == "/api/v1/projects":
+            return True
+        parts = scope["path"].split("/")
+        return (
+            scope["method"] == "PUT"
+            and len(parts) == 6
+            and parts[1:4] == ["api", "v1", "projects"]
+            and bool(parts[4])
+            and parts[5] == "archive"
         )
 
     @staticmethod

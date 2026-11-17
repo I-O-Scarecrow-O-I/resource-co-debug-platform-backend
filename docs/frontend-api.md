@@ -62,6 +62,11 @@ HTTP 422 是 FastAPI 标准错误，响应可能是 `{ "detail": [...] }`，不�
 压缩 ZIP 最多 64 MiB，HTTP 请求 body 最多 65 MiB。上限提高不代表 NaturalCC 完整验收工程已验证可导入；
 按要求暂缓实测。
 
+`PUT /api/v1/projects/{project_id}/archive` 使用相同的 `archive` multipart 字段，以新 ZIP 完整替换
+现有项目源码。该操作保留项目 ID 和增量扫描工作区身份，不会创建新项目；响应同时返回
+`changed_files`、`added_files`、`deleted_files`、`unchanged_files` 数量。后端先安全解压并计算差异，
+再与任务工作区快照互斥地原子切换源码目录。空 ZIP、非法 ZIP 或包含不安全路径的归档不会替换现有源码。
+
 `DELETE /api/v1/modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}`
 用于删除断点，成功仍返回该 envelope。`GET /api/v1/tasks/{task_id}/artifacts/{artifact_path}`
 返回 `application/octet-stream` 二进制内容而非 JSON；以 `fetch` 读取 `response.blob()`，并从
@@ -95,8 +100,8 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
 可选字段：`source_task_id`（同项目已成功任务的 UUID；见下文）、`mode`（`builtin`、`deep` 或 `comprehensive`，默认
 `deep`）、`target_files`（工作区相对路径，最多 500 项，默认空列表）、`sanitizer_report`（工作区内的
 相对日志路径）、`incremental`（默认 `false`）、`severity_threshold`（`low`/`medium`/`high`/
-`critical`，默认 `medium`）、`max_findings`（1–100，默认 30）、`timeout_seconds`（1–1800 秒，默认由
-服务配置决定）、`ground_truth_file`（可选，真值文件的工作区相对路径）、`rule_profile`（可选，`default`/`c_cpp`/`web`）。`targets` 范围的文件列表需包含真值引用的全部源文件。`max_findings` 限制 findings 返回列表；NaturalCC 在展示截断前计算 `contract_statistics`，前端保持上限 100 即可。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
+`critical`，默认 `medium`）、`max_findings`（1–300，默认 30）、`timeout_seconds`（1–1800 秒，默认由
+服务配置决定）、`ground_truth_file`（可选，真值文件的工作区相对路径）、`rule_profile`（可选，`default`/`c_cpp`/`web`）。`targets` 范围的文件列表需包含真值引用的全部源文件。`max_findings` 限制 findings 返回列表；NaturalCC 在展示截断前计算 `contract_statistics`，并在截断时优先保留当前 `scan_type` 的目标类别，平台前端上限为 300。未知字段会得到 422。所有文件路径都必须是工作区内的相对路径，不能使用绝对路径或
 `..`；`scope=project` 可不传 `target_files`。
 
 静态扫描可组合 `mode=builtin` 与 `ground_truth_file`，仅使用 NaturalCC 内置规则完成正式评估；此时 Cppcheck coverage 为 `not_requested`，Clang 不会启动，有效 GT 缺陷未被内置规则命中时按 FN 计入指标。综合后端直接校验并透传 NaturalCC 返回的 `contract_statistics`，不在本地重算。
@@ -115,7 +120,7 @@ envelope。前端可二选一：只使用 WebSocket 的历史加实时流；或�
   "target_files": ["src/main.c"],
   "ground_truth_file": "ground_truth.json",
   "rule_profile": "c_cpp",
-  "max_findings": 100
+  "max_findings": 300
 }
 ```
 
@@ -162,17 +167,17 @@ ThreadSanitizer (TSan) 日志通过可选 `sanitizer_report` 传入。先通过�
 ## A/B/C 路由分组
 
 所有路由、参数、状态码与 request/response schema 以 [`openapi.json`](openapi.json) 为准。下表按用途
-列出当前 41 个 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
+列出当前 HTTP path 的路由族；同一 path 的多个方法以 schema 为准。
 
 | 分组 | 用途 | 路由 |
 | --- | --- | --- |
-| 模块二 A：平台 | 健康、项目、模块清单、任务查询/日志/产物/取消与日志 WS | `GET /health`、`GET /modules`、`POST/GET /projects`、`GET /projects/{project_id}`、`GET /tasks`、`GET /tasks/{task_id}`、`GET /tasks/{task_id}/logs`、`GET /tasks/{task_id}/artifacts`、`GET /tasks/{task_id}/artifacts/{artifact_path}`、`POST /tasks/{task_id}/cancel`；另有 `WS /ws/v1/tasks/{task_id}/logs` |
+| 模块二 A：平台 | 健康、项目、模块清单、任务查询/日志/产物/取消与日志 WS | `GET /health`、`GET /modules`、`POST/GET /projects`、`GET /projects/{project_id}`、`PUT /projects/{project_id}/archive`、`GET /tasks`、`GET /tasks/{task_id}`、`GET /tasks/{task_id}/logs`、`GET /tasks/{task_id}/artifacts`、`GET /tasks/{task_id}/artifacts/{artifact_path}`、`POST /tasks/{task_id}/cancel`；另有 `WS /ws/v1/tasks/{task_id}/logs` |
 | 模块二 B：构建与调试 | 构建、调试、依赖分析/修复和完整调试会话 | `POST /tasks/build`、`POST /tasks/debug`、`POST /modules/co-debug/dependencies/analyze`、`repair`、`repair-build`、`POST /modules/co-debug/debug/sessions`、`GET /modules/co-debug/debug/sessions/{task_id}`、`GET /modules/co-debug/debug/sessions/{task_id}/state`、`GET /modules/co-debug/debug/sessions/{task_id}/stack-frames`、`POST /modules/co-debug/debug/sessions/{task_id}/arguments`、`breakpoints`、`run`、`continue`、`next`、`step`、`interrupt`、`wait`、`evaluate`、`close`、`DELETE /modules/co-debug/debug/sessions/{task_id}/breakpoints/{breakpoint_number}` |
 | 模块二 C：调度与指标 | 调度实验、调度对比、批处理调试对比与指标计算 | `POST /tasks/schedule-experiments`、`POST /tasks/schedule-comparisons`、`POST /modules/co-debug/debug/comparisons`、`GET /modules/co-debug/metrics/build-success-rate`、`GET /modules/co-debug/metrics/improvement-rate`、`POST /modules/co-debug/metrics/debug-comparison-summary` |
 | 模块一接入：代码生成 | NaturalCC 连通状态、能力声明和统一任务生命周期 | `GET /modules/code-generation/health`、`GET /modules/code-generation/capabilities`、`POST /modules/code-generation/tasks` |
 | 模块一接入：漏洞扫描 | 对工程或生成产物发起扫描任务 | `POST /modules/vulnerability/tasks` |
 
-表中的 HTTP 路径均相对于 `/api/v1`，共 41 个；例如模块一健康请求是
+表中的 HTTP 路径均相对于 `/api/v1`；例如模块一健康请求是
 `GET /api/v1/modules/code-generation/health`。模块二 B 行中未重复完整前缀的依赖动作均为
 `/modules/co-debug/dependencies/{action}`，调试动作均为
 `/modules/co-debug/debug/sessions/{task_id}/{action}`。

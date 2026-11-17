@@ -17,3 +17,14 @@ class ProjectWorkspace:
     status: ProjectStatus
     created_at: datetime
 
+
+@dataclass(slots=True, frozen=True)
+class ProjectSourceUpdate:
+    """Summary of an atomic source-tree replacement for an existing project."""
+
+    project: ProjectWorkspace
+    changed_files: int
+    added_files: int
+    deleted_files: int
+    unchanged_files: int
+

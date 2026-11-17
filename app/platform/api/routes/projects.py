@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from app.platform.api.deps import get_workspace_service
 from app.platform.schemas.common import ApiResponse
-from app.platform.schemas.projects import ProjectResponse
+from app.platform.schemas.projects import ProjectResponse, ProjectUpdateResponse
 from app.platform.services.workspace_service import WorkspaceService
 
 router = APIRouter()
@@ -39,6 +39,20 @@ async def upload_project(
     workspace = await workspace_service.create_from_archive(archive=archive, display_name=name)
     # 导入完成后再序列化快照；中途的解包路径不是可访问的项目资源。
     return ApiResponse.ok(ProjectResponse.from_workspace(workspace))
+
+
+@router.put(
+    "/{project_id}/archive",
+    response_model=ApiResponse[ProjectUpdateResponse],
+    responses=PROJECT_UPLOAD_RESPONSES,
+)
+async def update_project_archive(
+    project_id: UUID,
+    archive: Annotated[UploadFile, File(description="Replacement ZIP source archive")],
+    workspace_service: Annotated[WorkspaceService, Depends(get_workspace_service)],
+) -> ApiResponse[ProjectUpdateResponse]:
+    update = await workspace_service.update_from_archive(project_id, archive)
+    return ApiResponse.ok(ProjectUpdateResponse.from_update(update))
 
 
 # 列表反映当前服务已经认可的工程。

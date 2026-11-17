@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ from fastapi import UploadFile
 from app.core.errors import AppError, NotFoundError
 from app.core.time import utc_now
 from app.platform.domain.enums import ProjectStatus
-from app.platform.domain.project import ProjectWorkspace
+from app.platform.domain.project import ProjectSourceUpdate, ProjectWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ class WorkspaceService:
         self.storage_root.mkdir(parents=True, exist_ok=True)
         self._projects: dict[UUID, ProjectWorkspace] = {}
         self._lock = threading.RLock()
+        # A source replacement and a task snapshot for the same project must not
+        # overlap; otherwise copytree could observe half of two source revisions.
+        self._project_source_locks: dict[UUID, threading.RLock] = {}
         self._load_projects()
 
     # 只有归档完整解包并成功写入清单后，才把工程加入可查询索引。
@@ -102,6 +106,86 @@ class WorkspaceService:
         with self._lock:
             self._projects[project_id] = workspace
         return workspace
+
+    async def update_from_archive(
+        self,
+        project_id: UUID,
+        archive: UploadFile,
+    ) -> ProjectSourceUpdate:
+        """Atomically replace one project's source while preserving its identity."""
+        if not archive.filename:
+            raise AppError("archive filename is required")
+        if not archive.filename.lower().endswith(".zip"):
+            raise AppError("only .zip project archives are supported")
+
+        project = self.require_project(project_id)
+        project_root = project.root_path.resolve()
+        update_root = (project_root / f".source-update-{uuid4()}").resolve()
+        staged_source = (update_root / "source").resolve()
+        archive_path = (update_root / self._safe_filename(archive.filename)).resolve()
+        backup = (project_root / f".source-backup-{uuid4()}").resolve()
+        source = project.source_path.resolve()
+        if not all(
+            path.is_relative_to(project_root)
+            for path in (update_root, staged_source, archive_path, backup, source)
+        ):
+            raise AppError("invalid project update path")
+
+        try:
+            staged_source.mkdir(parents=True)
+            with archive_path.open("wb") as target:
+                self._copy_archive_limited(archive.file, target)
+            self._extract_zip_safely(archive_path, staged_source)
+            staged_manifest = self._source_hashes(staged_source)
+            if not staged_manifest:
+                raise AppError("project archive must contain at least one file")
+        except BadZipFile as exc:
+            self._cleanup_update_path(update_root)
+            raise AppError("invalid zip archive") from exc
+        except Exception:
+            self._cleanup_update_path(update_root)
+            raise
+
+        source_lock = self._project_source_lock(project_id)
+        moved_existing = False
+        try:
+            with source_lock:
+                current_manifest = self._source_hashes(source)
+                current_paths = set(current_manifest)
+                staged_paths = set(staged_manifest)
+                shared_paths = current_paths & staged_paths
+                changed_files = sum(
+                    current_manifest[path] != staged_manifest[path] for path in shared_paths
+                )
+                unchanged_files = len(shared_paths) - changed_files
+                added_files = len(staged_paths - current_paths)
+                deleted_files = len(current_paths - staged_paths)
+
+                source.rename(backup)
+                moved_existing = True
+                try:
+                    staged_source.rename(source)
+                except Exception:
+                    if not source.exists() and backup.exists():
+                        backup.rename(source)
+                        moved_existing = False
+                    raise
+        except Exception:
+            self._cleanup_update_path(update_root)
+            raise
+
+        # The new source is already published. Cleanup failures are diagnostic and
+        # must not turn a successful atomic swap into a misleading failed request.
+        self._cleanup_update_path(update_root)
+        if moved_existing:
+            self._cleanup_update_path(backup)
+        return ProjectSourceUpdate(
+            project=project,
+            changed_files=changed_files,
+            added_files=added_files,
+            deleted_files=deleted_files,
+            unchanged_files=unchanged_files,
+        )
 
     # 持锁生成按创建时间倒序的快照，调用者不访问服务内部索引。
     def list_projects(self) -> list[ProjectWorkspace]:
@@ -178,35 +262,67 @@ class WorkspaceService:
             and workspace.is_relative_to(task_root)
         ):
             raise AppError("invalid task workspace path")
-        # 使用新建目录复制，不将新源内容合并进已存在的固定副本。
+        # 使用新建目录复制，不将新源内容合并进已存在的固定副本。更新接口与
+        # 快照创建共享项目锁，使一次任务只看到更新前或更新后的完整源码树。
         source = source_path or project.source_path
-        if target_files is None:
-            copytree(source, workspace)
-        else:
-            if (
-                self._is_link_or_reparse_point(source)
-                or not source.resolve().is_relative_to(project_root)
-            ):
-                raise AppError("invalid task workspace source")
-            selected: list[tuple[Path, Path]] = []
-            for relative_path in target_files:
-                relative = Path(relative_path)
-                if relative.is_absolute() or ".." in relative.parts:
-                    raise AppError("target file must be relative to the workspace")
-                current = source
-                for component in relative.parts:
-                    current /= component
-                    if self._is_link_or_reparse_point(current):
-                        raise AppError("target files must not contain links or reparse points")
-                resolved = self.resolve_path_in_workspace(source, relative_path)
-                if not resolved.is_file():
-                    raise AppError(f"target file does not exist: {relative_path}")
-                selected.append((resolved, workspace / relative))
-            workspace.mkdir(parents=True)
-            for original, target in selected:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                copyfile(original, target)
+        with self._project_source_lock(project_id):
+            if target_files is None:
+                copytree(source, workspace)
+            else:
+                if (
+                    self._is_link_or_reparse_point(source)
+                    or not source.resolve().is_relative_to(project_root)
+                ):
+                    raise AppError("invalid task workspace source")
+                selected: list[tuple[Path, Path]] = []
+                for relative_path in target_files:
+                    relative = Path(relative_path)
+                    if relative.is_absolute() or ".." in relative.parts:
+                        raise AppError("target file must be relative to the workspace")
+                    current = source
+                    for component in relative.parts:
+                        current /= component
+                        if self._is_link_or_reparse_point(current):
+                            raise AppError("target files must not contain links or reparse points")
+                    resolved = self.resolve_path_in_workspace(source, relative_path)
+                    if not resolved.is_file():
+                        raise AppError(f"target file does not exist: {relative_path}")
+                    selected.append((resolved, workspace / relative))
+                workspace.mkdir(parents=True)
+                for original, target in selected:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    copyfile(original, target)
         return workspace
+
+    def _project_source_lock(self, project_id: UUID) -> threading.RLock:
+        with self._lock:
+            return self._project_source_locks.setdefault(project_id, threading.RLock())
+
+    @classmethod
+    def _source_hashes(cls, source_root: Path) -> dict[str, str]:
+        root = source_root.resolve()
+        hashes: dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            if cls._is_link_or_reparse_point(path):
+                raise AppError("project source must not contain links or reparse points")
+            if not path.is_file():
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as source:
+                while chunk := source.read(cls._ZIP_CHUNK_BYTES):
+                    digest.update(chunk)
+            hashes[path.relative_to(root).as_posix()] = digest.hexdigest()
+        return hashes
+
+    @staticmethod
+    def _cleanup_update_path(path: Path) -> None:
+        try:
+            if path.is_dir():
+                rmtree(path)
+            elif path.exists():
+                path.unlink()
+        except OSError as exc:
+            logger.warning("failed to remove project update path %s: %s", path, exc)
 
     def sync_project_incremental_workspace(
         self,
