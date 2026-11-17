@@ -590,6 +590,41 @@
         "title": "ApiResponse[ProjectResponse]",
         "type": "object"
       },
+      "ApiResponse_ProjectUpdateResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectUpdateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "default": "ok",
+            "title": "Message",
+            "type": "string"
+          },
+          "success": {
+            "title": "Success",
+            "type": "boolean"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "timestamp"
+        ],
+        "title": "ApiResponse[ProjectUpdateResponse]",
+        "type": "object"
+      },
       "ApiResponse_TaskResponse_": {
         "properties": {
           "data": {
@@ -1116,6 +1151,21 @@
           "version"
         ],
         "title": "BackendModuleResponse",
+        "type": "object"
+      },
+      "Body_update_project_archive_api_v1_projects__project_id__archive_put": {
+        "properties": {
+          "archive": {
+            "contentMediaType": "application/octet-stream",
+            "description": "Replacement ZIP source archive",
+            "title": "Archive",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archive"
+        ],
+        "title": "Body_update_project_archive_api_v1_projects__project_id__archive_put",
         "type": "object"
       },
       "Body_upload_project_api_v1_projects_post": {
@@ -2954,6 +3004,38 @@
         "title": "ProjectStatus",
         "type": "string"
       },
+      "ProjectUpdateResponse": {
+        "properties": {
+          "added_files": {
+            "title": "Added Files",
+            "type": "integer"
+          },
+          "changed_files": {
+            "title": "Changed Files",
+            "type": "integer"
+          },
+          "deleted_files": {
+            "title": "Deleted Files",
+            "type": "integer"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectResponse"
+          },
+          "unchanged_files": {
+            "title": "Unchanged Files",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project",
+          "changed_files",
+          "added_files",
+          "deleted_files",
+          "unchanged_files"
+        ],
+        "title": "ProjectUpdateResponse",
+        "type": "object"
+      },
       "ScheduleComparisonRequest": {
         "properties": {
           "build_task_id": {
@@ -3400,7 +3482,7 @@
           },
           "max_findings": {
             "default": 30,
-            "maximum": 100.0,
+            "maximum": 300.0,
             "minimum": 1.0,
             "title": "Max Findings",
             "type": "integer"
@@ -6625,6 +6707,89 @@
           }
         },
         "summary": "Get Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/v1/projects/{project_id}/archive": {
+      "put": {
+        "operationId": "update_project_archive_api_v1_projects__project_id__archive_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_update_project_archive_api_v1_projects__project_id__archive_put"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_ProjectUpdateResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Application error response."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_NoneType_"
+                }
+              }
+            },
+            "description": "Project upload exceeds the configured size limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project Archive",
         "tags": [
           "projects"
         ]
